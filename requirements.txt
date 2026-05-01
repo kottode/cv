@@ -1,0 +1,2 @@
+# Core keyword extraction used by `cv fit` and `cv tags`
+yake>=0.4.8

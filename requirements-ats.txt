@@ -1,0 +1,9 @@
+# External ATS parser source used by `cv ats`
+pyresparser>=1.0.6
+spacy>=3.8.0
+nltk>=3.9.0
+phonenumbers>=9.0.0
+
+# pyresparser runtime prerequisites (run once):
+# python -m spacy download en_core_web_sm
+# python -m nltk.downloader stopwords punkt averaged_perceptron_tagger words
