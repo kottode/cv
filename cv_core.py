@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass
@@ -21,7 +22,8 @@ CV_VERSION = "0.2.0"
 DEFAULT_MODEL = "gpt-5-mini"
 STATE_DIR = Path(".cv")
 STATE_FILE = STATE_DIR / "state.env"
-TRACK_FILE = STATE_DIR / "track.tsv"
+LEGACY_TRACK_FILE = STATE_DIR / "track.tsv"
+TRACK_FILE_NAME = "track.tsv"
 PROMPT_ICON = "󰈙"
 
 TAG_STOPWORDS = {
@@ -36,7 +38,8 @@ TECH_TAG_PATTERNS: list[tuple[str, str]] = [
     ("typescript", r"\btypescript\b"),
     ("javascript", r"\bjavascript\b"),
     ("react", r"\breact(?:\.js)?\b"),
-    ("next.js", r"\bnext(?:\.js)?\b"),
+    ("next.js", r"\bnext\.js\b|\bnextjs\b"),
+    ("nestjs", r"\bnest\.js\b|\bnestjs\b"),
     ("node.js", r"\bnode(?:\.js)?\b"),
     ("vue", r"\bvue(?:\.js)?\b"),
     ("angular", r"\bangular\b"),
@@ -73,6 +76,7 @@ TECH_TAG_PATTERNS: list[tuple[str, str]] = [
     ("java", r"\bjava\b"),
     ("spring", r"\bspring\b"),
     ("c#", r"\bc#\b|\bdotnet\b|\.net"),
+    ("c++", r"\bc\+\+\b"),
     ("go", r"\bgolang\b|\bgo\b"),
     ("rust", r"\brust\b"),
     ("php", r"\bphp\b"),
@@ -97,7 +101,8 @@ NOISY_TAG_TOKENS = {
     "yyyy", "mm", "here", "goes", "add", "candidate", "summary", "impact", "skill", "skills",
 }
 
-SHORT_TAG_ALLOWLIST = {"go", "ui", "ux", "qa", "ai", "ml", "bi", "aws", "gcp"}
+SHORT_TAG_ALLOWLIST = {"go", "ui", "ux", "qa", "ai", "ml", "bi", "aws", "gcp", "c#"}
+COMPOSITE_KEEP_TAGS = {"ci/cd", "ui/ux", "r&d", "b2b", "b2c"}
 
 
 class CVError(Exception):
@@ -133,7 +138,7 @@ def normalize_tag(value: str) -> str:
     value = value.strip().lower()
     value = re.sub(r"[`*_#>\[\](){}]", " ", value)
     value = re.sub(r"[^a-z0-9+.#/& -]", " ", value)
-    value = re.sub(r"\s+", " ", value).strip(" -")
+    value = re.sub(r"\s+", " ", value).strip(" .-_/&:")
     return value
 
 
@@ -219,6 +224,10 @@ def save_state(root: Path, state: CVState) -> None:
 
 def current_resume_path(state: CVState) -> Path:
     return Path("jobs") / state.current_job / f"{state.current_name}.md"
+
+
+def current_track_path(state: CVState) -> Path:
+    return Path("jobs") / state.current_job / TRACK_FILE_NAME
 
 
 def write_resume_template(resume_name: str, title: str) -> str:
@@ -309,9 +318,14 @@ def section_exists(text: str, section: str) -> bool:
     return re.search(rf"^## {re.escape(section)}$", text, flags=re.MULTILINE) is not None
 
 
-def ensure_track_file(root: Path) -> Path:
-    path = root / TRACK_FILE
+def ensure_track_file(root: Path, state: CVState) -> Path:
+    path = root / current_track_path(state)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    legacy = root / LEGACY_TRACK_FILE
+    if not path.is_file() and legacy.is_file() and state.current_job == "default":
+        shutil.copy2(legacy, path)
+
     if not path.is_file():
         path.write_text("item\tstatus\tupdated_at\tapplied_at\n", encoding="utf-8")
     return path
@@ -534,12 +548,12 @@ Usage:
   cv section [list|show|set|add|edit] ...
   cv skills [list|add|rm|manage] ...
   cv exp [list|add|rm|manage] ...
-    cv tags [text|url]
+  cv tags [text|url]
   cv say <question>
   cv fit <text|url>
-  cv tailor
+  cv tailor [text|url]
   cv track [item] [status]
-  cv ats
+    cv ats [senior]
   cv help
 
 Examples:
@@ -550,8 +564,11 @@ Examples:
   cv exp add \"Acme|Frontend Engineer|2022-01|Present\"
   cv fit \"Senior Frontend role with React TypeScript\"
   cv fit https://example.com/jobs/frontend-engineer
+    cv tailor https://example.com/jobs/frontend-engineer
+    cv tailor \"Senior frontend role with React TypeScript\"
     cv tags
     cv tags https://example.com/jobs/frontend-engineer
+    cv ats senior
 """
     )
     return 0
@@ -598,7 +615,7 @@ def cmd_init(args: list[str]) -> int:
     state = CVState(current_job="default", current_name=resume_name, current_title="Professional Title")
     save_state(root, state)
     ensure_resume_exists(root, state)
-    ensure_track_file(root)
+    ensure_track_file(root, state)
     setup_prompt_hook()
 
     print("Initialized CV project.")
@@ -649,6 +666,7 @@ def cmd_jobs(args: list[str]) -> int:
     save_state(root, state)
 
     resume = ensure_resume_exists(root, state)
+    ensure_track_file(root, state)
     print(f"Switched to: {resume.relative_to(root)}")
     return 0
 
@@ -795,41 +813,297 @@ def cmd_skills(args: list[str]) -> int:
     return 1
 
 
-def parse_experience_entries(body: str) -> list[dict[str, Any]]:
-    pattern = re.compile(
-        r"^###\s*(.*?)\s*\|\s*(.*?)\s*\|\s*([0-9]{4}-[0-9]{2})\s+to\s+([0-9]{4}-[0-9]{2}|Present|Current)\s*$",
-        re.MULTILINE,
+def month_index(value: str) -> int | None:
+    raw = value.strip().replace("/", "-")
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}", raw):
+        return None
+    year, month = raw.split("-")
+    month_i = int(month)
+    if month_i < 1 or month_i > 12:
+        return None
+    return int(year) * 12 + month_i
+
+
+def parse_date_range(value: str) -> tuple[str, str, int, int] | None:
+    cleaned = value.strip()
+    cleaned = re.sub(r"(?i)^date\s*:\s*", "", cleaned)
+    cleaned = cleaned.replace("/", "-")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+
+    match = re.search(
+        r"([0-9]{4}-[0-9]{2})\s*(?:to|\-|–|—|until)\s*([0-9]{4}-[0-9]{2}|present|current)",
+        cleaned,
+        flags=re.IGNORECASE,
     )
+    if not match:
+        return parse_named_month_date_range(cleaned)
+
+    start_raw, end_raw = match.group(1), match.group(2)
+    start_m = month_index(start_raw)
+    if start_m is None:
+        return None
+
+    end_label = end_raw.strip()
+    if end_label.lower() in {"present", "current"}:
+        now = dt.datetime.now()
+        end_m = now.year * 12 + now.month
+        end_out = "Present"
+    else:
+        end_m = month_index(end_label)
+        if end_m is None:
+            return None
+        end_out = end_label
+
+    if end_m < start_m:
+        return None
+
+    return start_raw, end_out, start_m, end_m
+
+
+def parse_named_month_date_range(value: str) -> tuple[str, str, int, int] | None:
+    month_map = {
+        "jan": 1,
+        "feb": 2,
+        "mar": 3,
+        "apr": 4,
+        "may": 5,
+        "jun": 6,
+        "jul": 7,
+        "aug": 8,
+        "sep": 9,
+        "sept": 9,
+        "oct": 10,
+        "nov": 11,
+        "dec": 12,
+    }
+
+    def month_from_name(name: str) -> int | None:
+        key = name.strip().lower()[:4]
+        return month_map.get(key[:3]) or month_map.get(key)
+
+    cleaned = re.sub(r"\s+", " ", value.strip())
+    match = re.search(
+        r"([A-Za-z]{3,9})\s+([0-9]{4})\s*(?:to|\-|–|—|until)\s*(?:(?:([A-Za-z]{3,9})\s+([0-9]{4}))|(present|current))",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    start_month_name, start_year, end_month_name, end_year, end_present = match.groups()
+    start_month = month_from_name(start_month_name)
+    if start_month is None:
+        return None
+    start_raw = f"{start_year}-{start_month:02d}"
+    start_m = int(start_year) * 12 + start_month
+
+    if end_present:
+        now = dt.datetime.now()
+        end_m = now.year * 12 + now.month
+        end_out = "Present"
+    else:
+        if not end_month_name or not end_year:
+            return None
+        end_month = month_from_name(end_month_name)
+        if end_month is None:
+            return None
+        end_out = f"{end_year}-{end_month:02d}"
+        end_m = int(end_year) * 12 + end_month
+
+    if end_m < start_m:
+        return None
+
+    return start_raw, end_out, start_m, end_m
+
+
+def clean_heading_value(value: str) -> str:
+    value = value.strip()
+    value = re.sub(r"^\*\*(.*?)\*\*$", r"\1", value)
+    value = re.sub(r"\s+", " ", value).strip(" -|")
+    return value
+
+
+def parse_experience_entries(body: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
+    blocks = re.split(r"(?=^###\s+)", body, flags=re.MULTILINE)
 
-    for match in pattern.finditer(body):
-        company, title, start, end = match.groups()
-
-        def month_index(value: str) -> int:
-            year, month = value.split("-")
-            return int(year) * 12 + int(month)
-
-        start_m = month_index(start)
-        if end.lower() in {"present", "current"}:
-            now = dt.datetime.now()
-            end_m = now.year * 12 + now.month
-        else:
-            end_m = month_index(end)
-        if end_m < start_m:
+    for block in blocks:
+        block = block.strip()
+        if not block.startswith("###"):
             continue
 
-        entries.append(
-            {
-                "company": company.strip(),
-                "title": title.strip(),
-                "start": start,
-                "end": end,
-                "start_m": start_m,
-                "end_m": end_m,
-            }
-        )
+        lines = [line.rstrip() for line in block.splitlines()]
+        lines = [line for line in lines if line.strip()]
+        if not lines:
+            continue
+
+        heading = re.sub(r"^###\s*", "", lines[0]).strip()
+        heading = clean_heading_value(heading)
+
+        def parse_title_line(raw_value: str) -> tuple[str | None, str | None]:
+            stripped = raw_value.strip()
+            if not stripped:
+                return None, None
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                return None, None
+
+            payload = stripped
+            label_match = re.match(r"(?i)^(position|role|title)\s*:\s*(.+)$", payload)
+            if label_match:
+                payload = label_match.group(2).strip()
+
+            bold_with_date = re.match(r"^\*\*(.*?)\*\*\s*(?:\(([^()]{6,})\))?$", payload)
+            if bold_with_date:
+                return clean_heading_value(bold_with_date.group(1)), bold_with_date.group(2)
+
+            plain_with_date = re.match(r"^([^()]{2,120})\s*\(([^()]{6,})\)\s*$", payload)
+            if plain_with_date:
+                return clean_heading_value(plain_with_date.group(1)), plain_with_date.group(2)
+
+            if parse_date_range(payload) is not None:
+                return None, None
+
+            if 2 <= len(payload) <= 120:
+                return clean_heading_value(payload), None
+
+            return None, None
+
+        def push_entry(
+            company_name: str,
+            title_value: str,
+            start_value: str,
+            end_value: str,
+            start_month: int | None,
+            end_month: int | None,
+            desc_lines: list[str],
+        ) -> None:
+            if not company_name or not title_value:
+                return
+            entries.append(
+                {
+                    "company": company_name,
+                    "title": clean_heading_value(title_value),
+                    "start": start_value,
+                    "end": end_value,
+                    "start_m": start_month,
+                    "end_m": end_month,
+                    "description": "\n".join(desc_lines).strip(),
+                }
+            )
+
+        company = ""
+        current_title = ""
+        current_start = ""
+        current_end = ""
+        current_start_m: int | None = None
+        current_end_m: int | None = None
+        current_desc: list[str] = []
+
+        inline_three = re.match(r"^(.*?)\s*\|\s*(.*?)\s*\|\s*(.+)$", heading, flags=re.IGNORECASE)
+        if inline_three:
+            company = clean_heading_value(inline_three.group(1))
+            current_title = clean_heading_value(inline_three.group(2))
+            parsed = parse_date_range(inline_three.group(3))
+            if parsed is not None:
+                current_start, current_end, current_start_m, current_end_m = parsed
+        else:
+            inline_pair = re.match(r"^(.*?)\s*\|\s*(.+)$", heading, flags=re.IGNORECASE)
+            if inline_pair:
+                company = clean_heading_value(inline_pair.group(1))
+                seed_title, seed_date = parse_title_line(inline_pair.group(2))
+                if seed_title:
+                    current_title = seed_title
+                if seed_date:
+                    parsed = parse_date_range(seed_date)
+                    if parsed is not None:
+                        current_start, current_end, current_start_m, current_end_m = parsed
+            else:
+                company = heading
+
+        for raw in lines[1:]:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+
+            parsed_title, parsed_title_date = parse_title_line(stripped)
+            if parsed_title:
+                if current_title:
+                    push_entry(company, current_title, current_start, current_end, current_start_m, current_end_m, current_desc)
+                    current_desc = []
+                    current_start = ""
+                    current_end = ""
+                    current_start_m = None
+                    current_end_m = None
+
+                current_title = parsed_title
+                if parsed_title_date:
+                    parsed = parse_date_range(parsed_title_date)
+                    if parsed is not None:
+                        current_start, current_end, current_start_m, current_end_m = parsed
+                continue
+
+            if current_title and current_start_m is None:
+                parsed = parse_date_range(stripped)
+                if parsed is not None:
+                    current_start, current_end, current_start_m, current_end_m = parsed
+                    continue
+
+            if current_title:
+                current_desc.append(stripped)
+
+        if current_title:
+            push_entry(company, current_title, current_start, current_end, current_start_m, current_end_m, current_desc)
 
     return entries
+
+
+def merge_unique_tags(primary: list[str], extra: list[str], limit: int = 35) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for value in [*primary, *extra]:
+        normalized = normalize_tag(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(normalized)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def ats_enrichment_text(parsed: dict[str, Any]) -> str:
+    if not parsed:
+        return ""
+
+    parts: list[str] = []
+    designation = parsed.get("designation")
+    if isinstance(designation, str) and designation.strip():
+        parts.append(designation.strip())
+
+    skills = parsed.get("skills")
+    if isinstance(skills, list):
+        parts.extend(str(item).strip() for item in skills if str(item).strip())
+
+    company_names = parsed.get("company_names")
+    if isinstance(company_names, list):
+        parts.extend(str(item).strip() for item in company_names if str(item).strip())
+
+    return "\n".join(parts)
+
+
+def ats_fields_subset(parsed: dict[str, Any]) -> dict[str, Any]:
+    if not parsed:
+        return {}
+    return {
+        "name": parsed.get("name"),
+        "email": parsed.get("email"),
+        "mobile_number": parsed.get("mobile_number"),
+        "skills": parsed.get("skills"),
+        "total_experience": parsed.get("total_experience"),
+        "degree": parsed.get("degree"),
+        "designation": parsed.get("designation"),
+        "company_names": parsed.get("company_names"),
+    }
 
 
 def cmd_exp(args: list[str]) -> int:
@@ -844,10 +1118,16 @@ def cmd_exp(args: list[str]) -> int:
         target_title = title_match.group(1).strip().lower() if title_match else state.current_title.lower()
         body = extract_section_body(text, "Work Experience")
         entries = parse_experience_entries(body)
+        provider, parsed, hint = run_external_ats_parser(text, auto_setup=False)
+
+        if hint:
+            warn(hint)
 
         if not entries:
             print("No parseable entries. Expected format:")
-            print("### Company | Title | YYYY-MM to YYYY-MM")
+            print("### Company")
+            print("Title or **Title**")
+            print("YYYY-MM to YYYY-MM")
             return 0
 
         def words(value: str) -> set[str]:
@@ -855,34 +1135,57 @@ def cmd_exp(args: list[str]) -> int:
 
         target_words = {w for w in words(target_title) if len(w) > 1}
 
-        entries.sort(key=lambda row: row["start_m"], reverse=True)
+        entries.sort(key=lambda row: row.get("start_m") if isinstance(row.get("start_m"), int) else -1, reverse=True)
         print("#  Company | Title | Range | Relevance")
         for idx, row in enumerate(entries, start=1):
             title_words = {w for w in words(row["title"]) if len(w) > 1}
             overlap = (len(target_words & title_words) / len(target_words)) if target_words else 0.0
-            print(f"{idx}. {row['company']} | {row['title']} | {row['start']} to {row['end']} | {round(overlap * 100)}%")
-
-        intervals = sorted((row["start_m"], row["end_m"]) for row in entries)
-        merged: list[list[int]] = []
-        for start_m, end_m in intervals:
-            if not merged or start_m > merged[-1][1]:
-                merged.append([start_m, end_m])
+            if row.get("start") and row.get("end"):
+                range_label = f"{row['start']} to {row['end']}"
             else:
-                merged[-1][1] = max(merged[-1][1], end_m)
+                range_label = "unknown"
+            print(f"{idx}. {row['company']} | {row['title']} | {range_label} | {round(overlap * 100)}%")
 
-        total_months = sum(end - start for start, end in merged)
-        total_years = total_months / 12 if total_months > 0 else 0
+        dated_entries = [
+            row
+            for row in entries
+            if isinstance(row.get("start_m"), int) and isinstance(row.get("end_m"), int)
+        ]
 
-        ordered = sorted(entries, key=lambda row: row["start_m"])
-        gap_months = 0
-        prev_end = ordered[0]["end_m"]
-        for row in ordered[1:]:
-            if row["start_m"] > prev_end:
-                gap_months += row["start_m"] - prev_end
-            prev_end = max(prev_end, row["end_m"])
+        if dated_entries:
+            intervals = sorted((int(row["start_m"]), int(row["end_m"])) for row in dated_entries)
+            merged: list[list[int]] = []
+            for start_m, end_m in intervals:
+                if not merged or start_m > merged[-1][1]:
+                    merged.append([start_m, end_m])
+                else:
+                    merged[-1][1] = max(merged[-1][1], end_m)
 
-        print(f"Total experience years: {total_years:.1f}")
-        print(f"Total gap months: {gap_months}")
+            total_months = sum(end - start for start, end in merged)
+            total_years = total_months / 12 if total_months > 0 else 0
+
+            ordered = sorted(dated_entries, key=lambda row: int(row["start_m"]))
+            gap_months = 0
+            prev_end = int(ordered[0]["end_m"])
+            for row in ordered[1:]:
+                row_start = int(row["start_m"])
+                row_end = int(row["end_m"])
+                if row_start > prev_end:
+                    gap_months += row_start - prev_end
+                prev_end = max(prev_end, row_end)
+
+            print(f"Total experience years: {total_years:.1f}")
+            print(f"Total gap months: {gap_months}")
+        else:
+            print("Total experience years: n/a (missing date ranges)")
+            print("Total gap months: n/a (missing date ranges)")
+
+        if parsed:
+            companies = parsed.get("company_names") if isinstance(parsed.get("company_names"), list) else []
+            print(f"ATS validation source: {provider}")
+            if companies:
+                preview = ", ".join(str(item) for item in companies[:8])
+                print(f"ATS company hints: {preview}")
         return 0
 
     if action == "add":
@@ -953,6 +1256,29 @@ def extract_frequency_keywords(text: str, top_n: int = 80) -> list[str]:
 def extract_meaningful_tags(text: str, max_tags: int = 80) -> list[str]:
     tags: list[str] = []
     seen: set[str] = set()
+    company_blacklist: set[str] = set()
+
+    def split_compound_terms(value: str) -> list[str]:
+        normalized = normalize_tag(value)
+        if not normalized:
+            return []
+        if re.search(r"\bci\s*/\s*cd\b", normalized):
+            return ["ci/cd"]
+        if re.search(r"\bui\s*/\s*ux\b", normalized):
+            return ["ui/ux"]
+        if normalized in COMPOSITE_KEEP_TAGS:
+            return [normalized]
+        if "/" in normalized or "&" in normalized or " and " in normalized:
+            chunks = [chunk.strip() for chunk in re.split(r"\s*(?:/|&|\band\b)\s*", normalized) if chunk.strip()]
+            if len(chunks) > 1:
+                return chunks
+        return [normalized]
+
+    def maybe_strip_skill_prefix(value: str) -> str:
+        value = value.strip()
+        value = re.sub(r"^\*\*[^*]{1,40}:\*\*\s*", "", value)
+        value = re.sub(r"^[A-Za-z0-9+.#/& -]{2,30}:\s*", "", value)
+        return value.strip()
 
     def add_tag(value: str) -> None:
         tag = normalize_tag(value)
@@ -967,11 +1293,17 @@ def extract_meaningful_tags(text: str, max_tags: int = 80) -> list[str]:
             return
         if len(tokens) > 4:
             return
+        if tag in company_blacklist:
+            return
         if tag in TAG_STOPWORDS:
             return
         if all(token in TAG_STOPWORDS for token in tokens):
             return
         if any(token in NOISY_TAG_TOKENS for token in tokens):
+            return
+        if tokens[0] in TAG_STOPWORDS or tokens[-1] in TAG_STOPWORDS:
+            return
+        if any(token in {"and", "or", "with", "using", "did"} for token in tokens):
             return
         if re.fullmatch(r"[0-9./-]+", tag):
             return
@@ -983,21 +1315,48 @@ def extract_meaningful_tags(text: str, max_tags: int = 80) -> list[str]:
     if not text.strip():
         return tags
 
-    # Structured markdown signals carry the strongest semantic meaning.
-    for line in text.splitlines():
+    title_match = re.search(r"^\*\*(.*?)\*\*$", text, flags=re.MULTILINE)
+    if title_match:
+        add_tag(title_match.group(1))
+
+    work_body = extract_section_body(text, "Work Experience")
+    for heading in re.findall(r"^###\s*(.+?)\s*$", work_body, flags=re.MULTILINE):
+        heading = heading.strip()
+        if not heading:
+            continue
+        if "|" in heading:
+            parts = [normalize_tag(part) for part in heading.split("|") if normalize_tag(part)]
+            if parts:
+                company_blacklist.add(parts[0])
+            if len(parts) > 1:
+                add_tag(parts[1])
+        else:
+            company_blacklist.add(normalize_tag(heading))
+
+    for role in re.findall(r"^\*\*(.*?)\*\*", work_body, flags=re.MULTILINE):
+        role = re.sub(r"\s*\(.*?\)\s*$", "", role).strip()
+        if role:
+            add_tag(role)
+
+    skills_body = extract_section_body(text, "Skills")
+    for line in skills_body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("- "):
-            item = stripped[2:].strip()
-            for part in re.split(r"[,;|]", item):
-                part = part.strip()
-                if part:
-                    add_tag(part)
-        elif stripped.startswith("### "):
-            header = stripped[4:].strip()
-            for part in re.split(r"[|]", header):
-                part = part.strip()
-                if part:
-                    add_tag(part)
+        if not stripped.startswith("- "):
+            continue
+        item = maybe_strip_skill_prefix(stripped[2:].strip())
+        if not item:
+            continue
+        for part in re.split(r"[,;|]", item):
+            part = part.strip()
+            if not part:
+                continue
+            for chunk in split_compound_terms(part):
+                add_tag(chunk)
+
+    # Include package names and explicit tool mentions from dedicated sections.
+    open_source_body = extract_section_body(text, "Open Source Packages")
+    for pkg in re.findall(r"^\s*-\s*\*\*(.*?)\*\*", open_source_body, flags=re.MULTILINE):
+        add_tag(pkg)
 
     lowered = text.lower()
     for name, pattern in TECH_TAG_PATTERNS:
@@ -1007,8 +1366,19 @@ def extract_meaningful_tags(text: str, max_tags: int = 80) -> list[str]:
     try:
         import yake  # type: ignore
 
+        focus_blocks = [
+            extract_section_body(text, "Summary"),
+            extract_section_body(text, "Skills"),
+            extract_section_body(text, "Work Experience"),
+            extract_section_body(text, "AI & LLM"),
+            extract_section_body(text, "Open Source Packages"),
+        ]
+        focus_text = "\n".join(block for block in focus_blocks if block.strip())
+        if not focus_text.strip():
+            focus_text = text
+
         extractor = yake.KeywordExtractor(lan="en", n=3, top=max_tags * 4, dedupLim=0.85)
-        for phrase, _score in extractor.extract_keywords(text):
+        for phrase, _score in extractor.extract_keywords(focus_text):
             cleaned = normalize_tag(phrase)
             if not cleaned:
                 continue
@@ -1050,10 +1420,19 @@ def cmd_tags(args: list[str]) -> int:
     text = read_text(resume)
 
     resume_tags = build_tags_from_resume(text)
+    provider, parsed, hint = run_external_ats_parser(text, auto_setup=False)
+    if hint:
+        warn(hint)
+
+    ats_seed = ats_enrichment_text(parsed)
+    if ats_seed:
+        ats_tags = extract_meaningful_tags(ats_seed, max_tags=35)
+        resume_tags = merge_unique_tags(resume_tags, ats_tags, limit=35)
     resume_count = len(resume_tags)
     fits = 25 <= resume_count <= 35
 
     print(f"Resume tags count: {resume_count}")
+    print(f"ATS enrichment source: {provider}")
     print(f"Fits 25-35 range: {'yes' if fits else 'no'}")
     if resume_count < 25:
         print(f"Need at least +{25 - resume_count} more tags.")
@@ -1314,8 +1693,14 @@ def cmd_fit(args: list[str]) -> int:
         job_text = job_text[:12000]
 
     resume_text = read_text(resume)
+    provider, parsed, hint = run_external_ats_parser(resume_text, auto_setup=False)
+    if hint:
+        warn(hint)
+    ats_seed = ats_enrichment_text(parsed)
 
     resume_kw = set(keywords_from_text(resume_text, top_n=60))
+    if ats_seed:
+        resume_kw.update(keywords_from_text(ats_seed, top_n=30))
     job_kw = set(keywords_from_text(job_text, top_n=60))
 
     if not job_kw:
@@ -1330,6 +1715,7 @@ def cmd_fit(args: list[str]) -> int:
     print(f"Source: {source_kind}")
     if source_kind == "url":
         print(f"URL: {source_value}")
+    print(f"ATS enrichment source: {provider}")
     print(f"Job text chars used: {len(job_text)}")
     print("Non-AI fit precheck")
     print(f"Keyword overlap score: {score}/100")
@@ -1379,26 +1765,60 @@ def cmd_say(args: list[str]) -> int:
 
 
 def cmd_tailor(args: list[str]) -> int:
-    del args
     root = require_project()
     state = load_state(root)
     base = ensure_resume_exists(root, state)
 
-    company = input("Company: ").strip()
-    if not company:
-        die("Company required")
+    description = ""
+    source_kind = ""
+    source_value = ""
+    if args:
+        source_kind, source_value, description = resolve_job_text_argument(" ".join(args).strip())
+        if not description:
+            die("Job description is empty")
 
-    role = input("Job title: ").strip()
-    if not role:
-        die("Job title required")
+    company = ""
+    role = ""
 
-    print("Paste job description. End input with Ctrl-D.")
-    description = sys.stdin.read().strip()
-    if not description:
-        die("Job description required")
+    if source_kind == "url":
+        print(f"Loaded job description from URL: {source_value}")
+        parsed = urllib.parse.urlparse(source_value)
+        host = parsed.netloc.lower().split("@")[-1].split(":")[0]
+        host = host[4:] if host.startswith("www.") else host
+        host_slug = slugify(host) or "url-source"
 
-    company_slug = slugify(company)
-    role_slug = slugify(role)
+        path_parts = [slugify(part) for part in parsed.path.split("/") if slugify(part)]
+        job_ref = path_parts[-1] if path_parts else "job"
+
+        company = "from-url"
+        role = f"{host_slug}-{job_ref}".strip("-")
+    else:
+        company = input("Company: ").strip()
+        if not company:
+            die("Company required")
+
+        role = input("Job title: ").strip()
+        if not role:
+            die("Job title required")
+
+    if source_kind:
+        description = re.sub(r"\s+", " ", description).strip()
+        if not description:
+            die("Job description is empty")
+        if len(description) > 12000:
+            description = description[:12000]
+        if source_kind == "text":
+            print("Loaded job description from text argument.")
+    else:
+        print("Paste job description. End input with Ctrl-D.")
+        description = sys.stdin.read().strip()
+        if not description:
+            die("Job description required")
+
+    company_slug = slugify(company) or "company"
+    role_slug = slugify(role) or "role"
+    company_slug = company_slug[:48].rstrip("-") or "company"
+    role_slug = role_slug[:80].rstrip("-") or "role"
 
     out_dir = root / "tailored" / company_slug / role_slug
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1406,12 +1826,30 @@ def cmd_tailor(args: list[str]) -> int:
     out_md = out_dir / f"{state.current_name}.md"
     out_docx = out_dir / f"{state.current_name}.docx"
 
+    base_text = read_text(base)
+    provider, parsed, hint = run_external_ats_parser(base_text, auto_setup=False)
+    if hint:
+        warn(hint)
+    ats_fields = ats_fields_subset(parsed)
+
     if shutil.which("copilot"):
+        metadata_header = ""
+        source_rule = ""
+        if source_kind == "url":
+            metadata_header = f"Source URL: {source_value}\n"
+            source_rule = (
+                "- Infer company name and job title from the provided source description text.\n"
+                "- Use the job title exactly as written in the source description; do not rewrite, normalize, or paraphrase it.\n"
+            )
+        else:
+            metadata_header = f"Company: {company}\nTitle: {role}\n"
+
         prompt = (
             f"Context: Base resume file at {base.relative_to(root)}\n"
+            f"External ATS source: {provider}\n"
+            f"External ATS parsed fields JSON: {json.dumps(ats_fields)}\n"
             "Task: Tailor resume for role.\n"
-            f"Company: {company}\n"
-            f"Title: {role}\n"
+            f"{metadata_header}"
             f"Description:\n{description}\n\n"
             "Rules:\n"
             "- Keep claims factual based on base resume only.\n"
@@ -1419,6 +1857,8 @@ def cmd_tailor(args: list[str]) -> int:
             "- Keep sections Summary, Work Experience, Skills, Education, Languages.\n"
             "- Improve ATS keyword alignment.\n"
             "- Keep concise action-oriented bullet points.\n"
+            "- Use external ATS parsed fields as validation hints; do not invent facts.\n"
+            f"{source_rule}"
             "Output only markdown."
         )
         try:
@@ -1444,8 +1884,8 @@ def cmd_tailor(args: list[str]) -> int:
 
 def cmd_track(args: list[str]) -> int:
     root = require_project()
-    load_state(root)
-    path = ensure_track_file(root)
+    state = load_state(root)
+    path = ensure_track_file(root, state)
 
     if not args:
         rows = maybe_mark_ghosted(path)
@@ -1659,15 +2099,8 @@ def run_spacy_external_parser(resume_text: str) -> tuple[dict[str, Any], str | N
     )
     degree = degree_match.group(1) if degree_match else None
 
-    company_names = [
-        company.strip()
-        for company in re.findall(
-            r"^###\s*(.*?)\s*\|\s*.*?\|\s*[0-9]{4}-[0-9]{2}\s+to\s+(?:[0-9]{4}-[0-9]{2}|Present|Current)\s*$",
-            resume_text,
-            flags=re.MULTILINE,
-        )
-        if company.strip()
-    ]
+    work_entries = parse_experience_entries(extract_section_body(resume_text, "Work Experience"))
+    company_names = [str(entry.get("company", "")).strip() for entry in work_entries if str(entry.get("company", "")).strip()]
     if not company_names:
         company_names = [ent.text.strip() for ent in doc.ents if ent.label_ == "ORG"]
     company_names = list(dict.fromkeys(company_names))[:12]
@@ -1687,13 +2120,22 @@ def run_spacy_external_parser(resume_text: str) -> tuple[dict[str, Any], str | N
     return parsed, None
 
 
-def run_external_ats_parser(resume_text: str) -> tuple[str, dict[str, Any], str | None]:
+def run_external_ats_parser(resume_text: str, auto_setup: bool = True) -> tuple[str, dict[str, Any], str | None]:
     import warnings
 
     warnings.filterwarnings("ignore", message=r".*\[W094\].*", category=UserWarning)
 
     provider = "pyresparser"
-    ResumeParser, hint = load_pyresparser_with_autosetup()
+    if auto_setup:
+        ResumeParser, hint = load_pyresparser_with_autosetup()
+    else:
+        hint = None
+        try:
+            from pyresparser import ResumeParser  # type: ignore
+        except Exception as exc:
+            ResumeParser = None
+            hint = f"pyresparser unavailable in quick mode: {exc}"
+
     if ResumeParser is None:
         fallback_parsed, fallback_hint = run_spacy_external_parser(resume_text)
         if has_useful_parsed_fields(fallback_parsed):
@@ -1746,13 +2188,12 @@ def run_external_ats_parser(resume_text: str) -> tuple[str, dict[str, Any], str 
 
 
 def cmd_ats(args: list[str]) -> int:
-    del args
     root = require_project()
     state = load_state(root)
     resume = ensure_resume_exists(root, state)
     resume_text = read_text(resume)
 
-    provider, parsed, hint = run_external_ats_parser(resume_text)
+    provider, parsed, hint = run_external_ats_parser(resume_text, auto_setup=True)
 
     print(f"ATS source: {provider} (external)")
     if hint is not None:
@@ -1769,6 +2210,78 @@ def cmd_ats(args: list[str]) -> int:
         "designation": parsed.get("designation") if parsed else None,
         "company_names": parsed.get("company_names") if parsed else None,
     }
+
+    if args:
+        profile = args[0].strip().lower()
+        if profile in {"senior", "sr", "staff", "lead", "principal"}:
+            senior_terms = r"\b(senior|sr\.?|staff|lead|principal|architect|head|manager)\b"
+            leadership_terms = r"\b(lead|led|mentor|mentored|ownership|architect|architecture|strategy|roadmap|stakeholder)\b"
+            senior_skill_pool = {
+                "typescript", "javascript", "react", "next.js", "node.js", "graphql", "aws", "docker", "kubernetes", "ci/cd",
+            }
+
+            designation = str(fields.get("designation") or "")
+            total_experience = fields.get("total_experience")
+            years = 0.0
+            if isinstance(total_experience, (int, float)):
+                years = float(total_experience)
+            else:
+                years_match = re.search(r"(\d{1,2})\+?\s+years", resume_text, flags=re.IGNORECASE)
+                years = float(years_match.group(1)) if years_match else 0.0
+
+            work_entries = parse_experience_entries(extract_section_body(resume_text, "Work Experience"))
+            dated_entries = [
+                row
+                for row in work_entries
+                if isinstance(row.get("start_m"), int) and isinstance(row.get("end_m"), int)
+            ]
+            if years <= 0 and dated_entries:
+                intervals = sorted((int(row["start_m"]), int(row["end_m"])) for row in dated_entries)
+                merged: list[list[int]] = []
+                for start_m, end_m in intervals:
+                    if not merged or start_m > merged[-1][1]:
+                        merged.append([start_m, end_m])
+                    else:
+                        merged[-1][1] = max(merged[-1][1], end_m)
+                total_months = sum(end_m - start_m for start_m, end_m in merged)
+                years = (total_months / 12) if total_months > 0 else 0.0
+
+            normalized = resume_text.lower()
+            title_signal = bool(re.search(senior_terms, f"{designation} {normalized}", flags=re.IGNORECASE))
+            leadership_signal = bool(re.search(leadership_terms, normalized, flags=re.IGNORECASE))
+
+            extracted_skills = set()
+            if isinstance(fields.get("skills"), list):
+                extracted_skills = {normalize_tag(str(item)) for item in fields.get("skills") or [] if str(item).strip()}
+            if not extracted_skills:
+                extracted_skills = set(extract_meaningful_tags(resume_text, max_tags=60))
+
+            skill_overlap = sorted(skill for skill in senior_skill_pool if skill in extracted_skills)
+            company_count = len(fields.get("company_names") or []) if isinstance(fields.get("company_names"), list) else 0
+            if company_count == 0 and work_entries:
+                company_count = len({str(row.get("company", "")).strip().lower() for row in work_entries if str(row.get("company", "")).strip()})
+
+            checks: list[tuple[str, bool, str]] = [
+                ("Experience >= 5 years", years >= 5.0, f"detected: {years:.1f}"),
+                ("Seniority title signal", title_signal, f"designation: {designation or 'none'}"),
+                ("Leadership signal", leadership_signal, "keywords in resume"),
+                ("Core senior skill overlap >= 4", len(skill_overlap) >= 4, f"matched: {', '.join(skill_overlap) if skill_overlap else 'none'}"),
+                ("Multi-company history >= 2", company_count >= 2, f"detected companies: {company_count}"),
+            ]
+
+            passed = sum(1 for _, ok, _ in checks if ok)
+            score = int(round((passed / len(checks)) * 100))
+
+            print("ATS profile filter: senior")
+            print(f"Source: {provider}")
+            print(f"Filter score: {score}/100")
+            print("Checks:")
+            for label, ok, detail in checks:
+                print(f"- {'PASS' if ok else 'FAIL'} | {label} | {detail}")
+            print("Decision: " + ("PASS" if passed >= 4 else "REVIEW" if passed >= 3 else "FAIL"))
+            return 0
+
+        die("Usage: cv ats [senior]")
 
     present = 0
     for value in fields.values():

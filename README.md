@@ -28,6 +28,30 @@ cv jobs frontend
 cv title Frontend Developer
 ```
 
+## Development Process
+
+Use this flow when adding or changing commands:
+
+- Define command behavior and input/output format first.
+- Implement command logic in `cv_core.py` and keep `cv` as a thin entry wrapper.
+- Keep command names and existing behavior stable unless intentionally changed.
+- Run fast local checks:
+
+```bash
+python3 -m py_compile cv cv_core.py
+./cv help
+```
+
+- Run feature smoke tests for changed commands (text, URL, and interactive paths when applicable).
+- Reinstall local binary after changes:
+
+```bash
+sh ./install.sh
+```
+
+- Validate behavior in a real resume project directory.
+- Update docs in this README when command behavior changes.
+
 Project layout after init:
 
 ```text
@@ -57,9 +81,9 @@ cv exp [list|add|rm|manage] ...
 cv tags [text|url]
 cv say <question>
 cv fit <text|url>
-cv tailor
+cv tailor [text|url]
 cv track [item] [status]
-cv ats
+cv ats [senior]
 cv help
 ```
 
@@ -87,29 +111,47 @@ cv exp add "Company|Role|YYYY-MM|YYYY-MM"
 cv exp add "Company|Role|YYYY-MM|Present"
 ```
 
-Expected markdown line format for parser:
+Accepted parser formats:
 
 ```text
 ### Company | Title | YYYY-MM to YYYY-MM
+
+### Company
+Title (or **Title** or Position: Title)
+YYYY-MM to YYYY-MM
+- Description bullets...
 ```
 
 ## Tailor Workflow
 
 ```bash
 cv tailor
+cv tailor https://example.com/jobs/frontend-engineer
+cv tailor "Senior frontend role with React TypeScript"
 ```
 
 Interactive prompts:
 
-1. Company
-2. Job title
-3. Job description (paste, then Ctrl-D)
+1. Company (only for `cv tailor` and `cv tailor "..."`)
+2. Job title (only for `cv tailor` and `cv tailor "..."`)
+3. Job description (only when no text/url argument is provided; paste, then Ctrl-D)
+
+For URL input, `cv tailor <url>` fetches and truncates posting text, does not prompt for company/title, and asks AI to keep the job title exactly as written in the source text.
+
+`cv tailor` also uses external ATS parser fields as validation hints for AI tailoring.
 
 Output:
 
 ```text
 tailored/<company>/<title>/<name>.md
 tailored/<company>/<title>/<name>.docx
+```
+
+For URL input, output path uses a safe source bucket:
+
+```text
+tailored/from-url/<source-ref>/<name>.md
+tailored/from-url/<source-ref>/<name>.docx
 ```
 
 Requires:
@@ -168,10 +210,17 @@ Status aliases:
 
 Ghosted status auto-applies after 30 days for open applications.
 
+Storage location is job-local:
+
+```text
+jobs/<job>/track.tsv
+```
+
 ## ATS Check
 
 ```bash
 cv ats
+cv ats senior
 ```
 
 Steps:
@@ -182,6 +231,15 @@ Steps:
 4. AI score and actionable advice via `copilot`.
 
 If external ATS parser is not installed, `cv ats` attempts auto-setup first and prints detailed setup errors if it still fails.
+
+`cv ats senior` emulates a practical senior-profile ATS filter with pass/fail checks (experience years, title signal, leadership signal, skill overlap, multi-company history).
+
+External ATS parser fields are also reused by:
+
+- `cv tags` for tag enrichment.
+- `cv exp` for extraction validation hints.
+- `cv fit` for resume keyword enrichment.
+- `cv tailor` for ATS-guided prompt context.
 
 ## Prompt Label
 
