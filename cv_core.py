@@ -24,8 +24,6 @@ STATE_DIR = Path(".cv")
 STATE_FILE = STATE_DIR / "state.env"
 LEGACY_TRACK_FILE = STATE_DIR / "track.tsv"
 TRACK_FILE_NAME = "track.tsv"
-PROMPT_ICON = "󰈙"
-
 TAG_STOPWORDS = {
     "and", "the", "for", "with", "from", "that", "this", "your", "you", "into", "over", "under", "about",
     "have", "has", "had", "are", "was", "were", "will", "would", "can", "could", "should", "our", "their",
@@ -420,98 +418,28 @@ def is_status_token(token: str) -> bool:
     return re.fullmatch(r"(?:i|int)\d+", token) is not None
 
 
-def setup_prompt_hook() -> None:
-    helper_dir = Path.home() / ".local" / "share" / "cv"
-    helper_file = helper_dir / "prompt.sh"
+def remove_prompt_hook() -> None:
+    helper_file = Path.home() / ".local" / "share" / "cv" / "prompt.sh"
     bashrc = Path.home() / ".bashrc"
     marker_start = "# >>> cv prompt >>>"
     marker_end = "# <<< cv prompt <<<"
 
-    helper_dir.mkdir(parents=True, exist_ok=True)
-    helper_content = f"""# shellcheck shell=bash
-
-[[ $- != *i* ]] && return 0
-
-__cv_prompt_find_root() {{
-    local dir
-    dir=\"$PWD\"
-
-    while [ \"$dir\" != \"/\" ]; do
-        if [ -f \"$dir/.cv/state.env\" ]; then
-            printf '%s\\n' \"$dir\"
-            return 0
-        fi
-        dir=\"$(dirname \"$dir\")\"
-    done
-
-    return 1
-}}
-
-__cv_prompt_pretty_name() {{
-    local raw
-    raw=\"${{1:-resume}}\"
-    raw=\"${{raw//-/ }}\"
-    printf '%s\\n' \"$raw\" | awk '{{
-        for (i = 1; i <= NF; i++) {{
-            $i = toupper(substr($i, 1, 1)) tolower(substr($i, 2))
-        }}
-        print
-    }}'
-}}
-
-__cv_prompt_strip_prefix() {{
-    printf '%s' \"$1\" | sed -E 's/^\\[(cv:[^]]+|{PROMPT_ICON} [^]]+)\\] //'
-}}
-
-__cv_prompt_update() {{
-    local root label
-    root=\"$(__cv_prompt_find_root 2>/dev/null || true)\"
-
-    if [ -n \"$root\" ] && [ -f \"$root/.cv/state.env\" ]; then
-        # shellcheck disable=SC1090
-        source \"$root/.cv/state.env\"
-
-        if [ -z \"${{CV_BASE_PS1+x}}\" ]; then
-            CV_BASE_PS1=\"$(__cv_prompt_strip_prefix \"$PS1\")\"
-        fi
-
-        if [[ \"$PS1\" != \\[{PROMPT_ICON}* ]] && [[ \"$PS1\" != \\[cv:* ]]; then
-            CV_BASE_PS1=\"$(__cv_prompt_strip_prefix \"$PS1\")\"
-        fi
-
-        label=\"$(__cv_prompt_pretty_name \"${{CURRENT_NAME:-resume}}\")\"
-        PS1=\"[{PROMPT_ICON} $label] $CV_BASE_PS1\"
-    else
-        if [[ \"$PS1\" == \\[{PROMPT_ICON}* ]] || [[ \"$PS1\" == \\[cv:* ]]; then
-            PS1=\"$(__cv_prompt_strip_prefix \"$PS1\")\"
-        elif [ -n \"${{CV_BASE_PS1+x}}\" ]; then
-            PS1=\"$CV_BASE_PS1\"
-        fi
-    fi
-}}
-
-if [[ \"${{PROMPT_COMMAND:-}}\" != *\"__cv_prompt_update\"* ]]; then
-    PROMPT_COMMAND=\"__cv_prompt_update${{PROMPT_COMMAND:+;${{PROMPT_COMMAND}}}}\"
-fi
-"""
-    helper_file.write_text(helper_content, encoding="utf-8")
+    try:
+        helper_file.unlink(missing_ok=True)
+    except Exception:
+        pass
 
     if not bashrc.exists():
-        bashrc.touch()
-    bashrc_content = bashrc.read_text(encoding="utf-8")
-    if marker_start not in bashrc_content:
-        bashrc.write_text(
-            bashrc_content
-            + "\n"
-            + marker_start
-            + "\n"
-            + f"if [ -f \"{helper_file}\" ]; then\n"
-            + f"    source \"{helper_file}\"\n"
-            + "fi\n"
-            + marker_end
-            + "\n",
-            encoding="utf-8",
-        )
+        return
+
+    content = bashrc.read_text(encoding="utf-8")
+    block_pattern = re.compile(
+        rf"\n?{re.escape(marker_start)}\n.*?{re.escape(marker_end)}\n?",
+        flags=re.DOTALL,
+    )
+    cleaned = block_pattern.sub("\n", content)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    bashrc.write_text(cleaned, encoding="utf-8")
 
 
 def run_copilot(prompt: str, capture: bool = False) -> str:
@@ -616,11 +544,11 @@ def cmd_init(args: list[str]) -> int:
     save_state(root, state)
     ensure_resume_exists(root, state)
     ensure_track_file(root, state)
-    setup_prompt_hook()
+    remove_prompt_hook()
 
     print("Initialized CV project.")
     print(f"Current resume: {current_resume_path(state)}")
-    print("Prompt hook installed. Open new shell or run: source ~/.bashrc")
+    print("Prompt hook disabled. Existing cv prompt hook removed from ~/.bashrc if present.")
     return 0
 
 
