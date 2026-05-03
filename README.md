@@ -84,8 +84,13 @@ cv fit <text|url>
 cv tailor [text|url]
 cv track [item] [status]
 cv ats [senior]
+cv ci telegram [setup|status|send] [message]
 cv help
 ```
+
+## Integrations
+
+See [docs/integrations.md](docs/integrations.md) for setup and script usage of Telegram integration.
 
 ## Skills Management
 
