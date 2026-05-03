@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-from pathlib import Path
 
-from ...config import CVState, STATE_DIR
+from ...config import CVState
 from ...errors import die, warn
 from ...internal.ats import ats_enrichment_text, run_external_ats_parser
 from ...internal.project import (
+    cv_home_dir,
     current_resume_path,
     ensure_resume_exists,
     extract_section_body,
@@ -33,30 +33,28 @@ from ...utils import slugify
 
 
 def cmd_init(args: list[str]) -> int:
-    root = Path.cwd()
+    root = cv_home_dir()
 
-    resume_name = args[0] if args else ""
-    if not resume_name:
-        proc = subprocess.run(["git", "config", "--get", "user.name"], text=True, capture_output=True)
-        if proc.returncode == 0:
-            resume_name = proc.stdout.strip()
-    if not resume_name:
-        resume_name = "resume"
+    if not args:
+        die("Usage: cv init <name>")
+
+    resume_name = args[0]
 
     resume_name = slugify(resume_name)
+    if not resume_name:
+        die("Usage: cv init <name>")
 
-    (root / STATE_DIR).mkdir(parents=True, exist_ok=True)
-    (root / "jobs" / "default").mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "jobs").mkdir(parents=True, exist_ok=True)
     (root / "tailored").mkdir(parents=True, exist_ok=True)
 
-    state = CVState(current_job="default", current_name=resume_name, current_title="Professional Title")
+    state = CVState(current_job="", current_name=resume_name, current_title="Professional Title")
     save_state(root, state)
-    ensure_resume_exists(root, state)
-    ensure_track_file(root, state)
     remove_prompt_hook()
 
-    print("Initialized CV project.")
-    print(f"Current resume: {current_resume_path(state)}")
+    print(f"Initialized CV home at {root}.")
+    print("No active job selected yet.")
+    print("Run: cv jobs <job> [name]")
     print("Prompt hook disabled. Existing cv prompt hook removed from ~/.bashrc if present.")
     return 0
 
@@ -65,8 +63,15 @@ def cmd_current(args: list[str]) -> int:
     del args
     root = require_project()
     state = load_state(root)
-    ensure_resume_exists(root, state)
 
+    if not state.current_job:
+        print("Job: (none)")
+        print(f"Name: {state.current_name}")
+        print("File: (none)")
+        print("Run: cv jobs <job> [name]")
+        return 0
+
+    ensure_resume_exists(root, state)
     print(f"Job: {state.current_job}")
     print(f"Name: {state.current_name}")
     print(f"File: {current_resume_path(state)}")
@@ -76,7 +81,6 @@ def cmd_current(args: list[str]) -> int:
 def cmd_jobs(args: list[str]) -> int:
     root = require_project()
     state = load_state(root)
-    ensure_resume_exists(root, state)
 
     if not args or args[0] == "list":
         jobs_dir = root / "jobs"

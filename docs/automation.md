@@ -34,7 +34,7 @@ Automation state is project-local and job-local:
 
 - `.cv/auto.env`
 - `jobs/<job>/posts.json`
-- `jobs/<job>/track.tsv`
+- `jobs/<job>/track.csv`
 
 ## Configure `.cv/auto.env`
 

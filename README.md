@@ -22,11 +22,12 @@ Default install target is `~/.local/bin/cv`.
 ## Quick Start
 
 ```bash
-cd /path/to/your/resume/project
 cv init john-bang-gang
 cv jobs frontend
 cv title Frontend Developer
 ```
+
+`cv` now uses a global home directory at `~/Resume`.
 
 ## Development Process
 
@@ -58,13 +59,14 @@ sh ./install.sh
 Project layout after init:
 
 ```text
-.cv/state.env
-.cv/auto.env
-jobs/default/<name>.md
-jobs/default/track.tsv
-jobs/default/posts.json
-tailored/
+~/Resume/
+  .cv/state.env
+  .cv/auto.env
+  jobs/
+  tailored/
 ```
+
+`cv init <name>` creates `~/Resume` and `.cv` state only. A job workspace is created when you run `cv jobs <job> [name]`.
 
 Resume versions are stored at:
 
@@ -105,7 +107,7 @@ cvapp/
 ## Commands
 
 ```text
-cv init [name]
+cv init <name>
 cv install [target]
 cv current
 cv jobs [job] [name]
@@ -259,7 +261,7 @@ Ghosted status auto-applies after 30 days for open applications.
 Storage location is job-local:
 
 ```text
-jobs/<job>/track.tsv
+jobs/<job>/track.csv
 ```
 
 ## Parsed Posts
@@ -292,7 +294,7 @@ cv auto disable
 - parse and fit-score each post
 - grade and store to `jobs/<job>/posts.json`
 - optionally auto-apply with Playwright (`AUTO_APPLY=1`)
-- track successful applies in `jobs/<job>/track.tsv`
+- track successful applies in `jobs/<job>/track.csv`
 - optionally notify via Telegram (`AUTO_NOTIFY=1`)
 
 Full setup and config reference: [docs/automation.md](docs/automation.md).

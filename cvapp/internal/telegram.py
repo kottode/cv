@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import urllib.parse
 import urllib.request
@@ -15,7 +16,28 @@ from ..utils import quote_env
 from .env import load_env_style_file
 
 
+LEGACY_TELEGRAM_CONFIG_FILE = Path.home() / ".config" / "cv" / "telegram.env"
+
+
+def _migrate_legacy_config() -> None:
+    if TELEGRAM_CONFIG_FILE.is_file():
+        return
+    if not LEGACY_TELEGRAM_CONFIG_FILE.is_file():
+        return
+
+    TELEGRAM_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(LEGACY_TELEGRAM_CONFIG_FILE), str(TELEGRAM_CONFIG_FILE))
+    except Exception:
+        try:
+            shutil.copy2(LEGACY_TELEGRAM_CONFIG_FILE, TELEGRAM_CONFIG_FILE)
+            LEGACY_TELEGRAM_CONFIG_FILE.unlink(missing_ok=True)
+        except Exception:
+            return
+
+
 def save_config(bot_token: str, chat_id: str) -> Path:
+    _migrate_legacy_config()
     TELEGRAM_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     content = "\n".join(
         [
@@ -33,6 +55,7 @@ def save_config(bot_token: str, chat_id: str) -> Path:
 
 
 def load_config() -> dict[str, str]:
+    _migrate_legacy_config()
     values = load_env_style_file(TELEGRAM_CONFIG_FILE)
     token = (values.get("TELEGRAM_BOT_TOKEN") or "").strip()
     chat_id = (values.get("TELEGRAM_CHAT_ID") or "").strip()

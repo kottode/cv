@@ -8,10 +8,10 @@ DEFAULT_MODEL = "gpt-5-mini"
 STATE_DIR = Path(".cv")
 STATE_FILE = STATE_DIR / "state.env"
 LEGACY_TRACK_FILE = STATE_DIR / "track.tsv"
-TRACK_FILE_NAME = "track.tsv"
+TRACK_FILE_NAME = "track.csv"
 POSTS_FILE_NAME = "posts.json"
 AUTO_CONFIG_FILE = STATE_DIR / "auto.env"
-TELEGRAM_CONFIG_FILE = Path.home() / ".config" / "cv" / "telegram.env"
+TELEGRAM_CONFIG_FILE = Path.home() / "Resume" / STATE_DIR / "telegram.env"
 TELEGRAM_SETUP_TEST_MESSAGE = "cv telegram integration connected"
 
 TAG_STOPWORDS = {
@@ -95,7 +95,7 @@ COMPOSITE_KEEP_TAGS = {"ci/cd", "ui/ux", "r&d", "b2b", "b2c"}
 
 @dataclass
 class CVState:
-    current_job: str = "default"
+    current_job: str = ""
     current_name: str = "resume"
     current_title: str = "Professional Title"
 

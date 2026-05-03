@@ -37,7 +37,7 @@ CV_TELEGRAM_BOT_TOKEN="<token>" CV_TELEGRAM_CHAT_ID="<chat_id>" cv ci telegram s
 Stored config path:
 
 ```text
-~/.config/cv/telegram.env
+~/Resume/.cv/telegram.env
 ```
 
 ### Status

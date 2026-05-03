@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import json
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -13,16 +13,56 @@ from ..internal.project import current_posts_path, current_track_path
 from ..utils import now_iso, parse_iso
 
 
+TRACK_FIELDS = ["item", "status", "updated_at", "applied_at"]
+
+
+def _read_track_rows_from_delimited(path: Path, delimiter: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    with path.open("r", encoding="utf-8", newline="") as fp:
+        reader = csv.reader(fp, delimiter=delimiter)
+        for idx, parts in enumerate(reader):
+            if idx == 0 and [part.strip().lower() for part in parts[:4]] == TRACK_FIELDS:
+                continue
+            if not parts or not any(cell.strip() for cell in parts):
+                continue
+            while len(parts) < 4:
+                parts.append("")
+            item, status, updated_at, applied_at = parts[:4]
+            rows.append(
+                {
+                    "item": item,
+                    "status": status,
+                    "updated_at": updated_at,
+                    "applied_at": applied_at,
+                }
+            )
+    return rows
+
+
 def ensure_track_file(root: Path, state: CVState) -> Path:
     path = root / current_track_path(state)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    legacy_path = root / LEGACY_TRACK_FILE
-    if not path.is_file() and legacy_path.is_file() and state.current_job == "default":
-        shutil.copy2(legacy_path, path)
+    if not path.is_file():
+        legacy_candidates: list[Path] = []
+        tsv_path = path.with_suffix(".tsv")
+        if tsv_path.is_file():
+            legacy_candidates.append(tsv_path)
+
+        legacy_path = root / LEGACY_TRACK_FILE
+        if state.current_job == "default" and legacy_path.is_file():
+            legacy_candidates.append(legacy_path)
+
+        for candidate in legacy_candidates:
+            if not candidate.is_file():
+                continue
+            delimiter = "\t" if candidate.suffix.lower() == ".tsv" else ","
+            rows = _read_track_rows_from_delimited(candidate, delimiter)
+            write_track_rows(path, rows)
+            break
 
     if not path.is_file():
-        path.write_text("item\tstatus\tupdated_at\tapplied_at\n", encoding="utf-8")
+        write_track_rows(path, [])
     return path
 
 
@@ -105,32 +145,18 @@ def upsert_post_record(posts: list[dict[str, Any]], record: dict[str, Any]) -> b
 
 
 def read_track_rows(path: Path) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
-        if idx == 0:
-            continue
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        while len(parts) < 4:
-            parts.append("")
-        item, status, updated_at, applied_at = parts[:4]
-        rows.append(
-            {
-                "item": item,
-                "status": status,
-                "updated_at": updated_at,
-                "applied_at": applied_at,
-            }
-        )
-    return rows
+    if not path.is_file():
+        return []
+    return _read_track_rows_from_delimited(path, ",")
 
 
 def write_track_rows(path: Path, rows: list[dict[str, str]]) -> None:
-    lines = ["item\tstatus\tupdated_at\tapplied_at"]
-    for row in rows:
-        lines.append(
-            "\t".join(
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(TRACK_FIELDS)
+        for row in rows:
+            writer.writerow(
                 [
                     row.get("item", ""),
                     row.get("status", ""),
@@ -138,8 +164,6 @@ def write_track_rows(path: Path, rows: list[dict[str, str]]) -> None:
                     row.get("applied_at", ""),
                 ]
             )
-        )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def maybe_mark_ghosted(path: Path) -> list[dict[str, str]]:

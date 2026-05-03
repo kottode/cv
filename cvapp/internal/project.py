@@ -9,18 +9,22 @@ from ..errors import die
 from ..utils import pretty_name, quote_env, unquote_env
 
 
+def cv_home_dir() -> Path:
+    return Path.home() / "Resume"
+
+
 def find_project_root(start: Path) -> Path | None:
-    start = start.resolve()
-    for candidate in [start, *start.parents]:
-        if (candidate / STATE_FILE).is_file():
-            return candidate
+    del start
+    root = cv_home_dir().resolve()
+    if (root / STATE_FILE).is_file():
+        return root
     return None
 
 
 def require_project() -> Path:
     root = find_project_root(Path.cwd())
     if root is None:
-        die("No CV project found in current path. Run: cv init")
+        die("CV home not initialized at ~/Resume. Run: cv init")
     os.chdir(root)
     return root
 
@@ -38,12 +42,18 @@ def load_state(root: Path) -> CVState:
         key, value = line.split("=", 1)
         value = unquote_env(value)
         if key == "CURRENT_JOB":
-            state.current_job = value or "default"
+            state.current_job = value or ""
         elif key == "CURRENT_NAME":
             state.current_name = value or "resume"
         elif key == "CURRENT_TITLE":
             state.current_title = value or "Professional Title"
     return state
+
+
+def require_active_job(state: CVState) -> None:
+    if state.current_job.strip():
+        return
+    die("No active job selected. Run: cv jobs <job> [name]")
 
 
 def save_state(root: Path, state: CVState) -> None:
@@ -61,14 +71,17 @@ def save_state(root: Path, state: CVState) -> None:
 
 
 def current_resume_path(state: CVState) -> Path:
+    require_active_job(state)
     return Path("jobs") / state.current_job / f"{state.current_name}.md"
 
 
 def current_track_path(state: CVState) -> Path:
+    require_active_job(state)
     return Path("jobs") / state.current_job / TRACK_FILE_NAME
 
 
 def current_posts_path(state: CVState) -> Path:
+    require_active_job(state)
     return Path("jobs") / state.current_job / POSTS_FILE_NAME
 
 

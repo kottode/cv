@@ -2,7 +2,7 @@ HELP_TEXT = """\
 cv - resume workflow CLI
 
 Usage:
-    cv init [name]
+    cv init <name>
     cv install [target]
     cv current
     cv jobs [job] [name]
