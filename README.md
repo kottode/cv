@@ -56,8 +56,10 @@ Project layout after init:
 
 ```text
 .cv/state.env
-.cv/track.tsv
+.cv/auto.env
 jobs/default/<name>.md
+jobs/default/track.tsv
+jobs/default/posts.json
 tailored/
 ```
 
@@ -83,6 +85,8 @@ cv say <question>
 cv fit <text|url>
 cv tailor [text|url]
 cv track [item] [status]
+cv posts [list|all|filtered|show <index>]
+cv auto [status|enable|disable]
 cv ats [senior]
 cv ci telegram [setup|status|send] [message]
 cv help
@@ -91,6 +95,8 @@ cv help
 ## Integrations
 
 See [docs/integrations.md](docs/integrations.md) for setup and script usage of Telegram integration.
+
+See [docs/automation.md](docs/automation.md) for automated seek/filter/analyze/grade/store/apply/track/notify flow.
 
 ## Skills Management
 
@@ -220,6 +226,41 @@ Storage location is job-local:
 ```text
 jobs/<job>/track.tsv
 ```
+
+## Parsed Posts
+
+`cv auto enable` stores parsed and graded post records in:
+
+```text
+jobs/<job>/posts.json
+```
+
+View them with:
+
+```bash
+cv posts
+cv posts all
+cv posts show 1
+```
+
+## Automation
+
+```bash
+cv auto status
+cv auto enable
+cv auto disable
+```
+
+`cv auto enable` runs one automation cycle using `.cv/auto.env` settings:
+
+- seek job links from `AUTO_SEARCH_URLS`
+- parse and fit-score each post
+- grade and store to `jobs/<job>/posts.json`
+- optionally auto-apply with Playwright (`AUTO_APPLY=1`)
+- track successful applies in `jobs/<job>/track.tsv`
+- optionally notify via Telegram (`AUTO_NOTIFY=1`)
+
+Full setup and config reference: [docs/automation.md](docs/automation.md).
 
 ## ATS Check
 

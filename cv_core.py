@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -9,10 +10,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import urllib.parse
 import urllib.request
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -24,6 +26,8 @@ STATE_DIR = Path(".cv")
 STATE_FILE = STATE_DIR / "state.env"
 LEGACY_TRACK_FILE = STATE_DIR / "track.tsv"
 TRACK_FILE_NAME = "track.tsv"
+POSTS_FILE_NAME = "posts.json"
+AUTO_CONFIG_FILE = STATE_DIR / "auto.env"
 TELEGRAM_CONFIG_FILE = Path.home() / ".config" / "cv" / "telegram.env"
 TELEGRAM_SETUP_TEST_MESSAGE = "cv telegram integration connected"
 TAG_STOPWORDS = {
@@ -114,6 +118,26 @@ class CVState:
     current_job: str = "default"
     current_name: str = "resume"
     current_title: str = "Professional Title"
+
+
+@dataclass
+class AutoConfig:
+    enabled: bool = False
+    search_urls: list[str] = field(default_factory=list)
+    include_keywords: list[str] = field(default_factory=list)
+    exclude_keywords: list[str] = field(default_factory=list)
+    min_score: int = 60
+    max_posts: int = 12
+    max_links_per_seed: int = 25
+    auto_apply: bool = True
+    notify: bool = True
+    last_run_at: str = ""
+    last_seeked: int = 0
+    last_parsed: int = 0
+    last_filtered: int = 0
+    last_stored: int = 0
+    last_applied: int = 0
+    last_error: str = ""
 
 
 def die(message: str) -> None:
@@ -230,6 +254,10 @@ def current_track_path(state: CVState) -> Path:
     return Path("jobs") / state.current_job / TRACK_FILE_NAME
 
 
+def current_posts_path(state: CVState) -> Path:
+    return Path("jobs") / state.current_job / POSTS_FILE_NAME
+
+
 def write_resume_template(resume_name: str, title: str) -> str:
     display_name = pretty_name(resume_name)
     return (
@@ -331,6 +359,56 @@ def ensure_track_file(root: Path, state: CVState) -> Path:
     return path
 
 
+def ensure_posts_file(root: Path, state: CVState) -> Path:
+    path = root / current_posts_path(state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file():
+        payload = {
+            "version": 1,
+            "updated_at": now_iso(),
+            "posts": [],
+        }
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    return path
+
+
+def load_posts(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return []
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    if isinstance(parsed, list):
+        posts = parsed
+    elif isinstance(parsed, dict) and isinstance(parsed.get("posts"), list):
+        posts = parsed.get("posts")
+    else:
+        posts = []
+
+    valid_posts: list[dict[str, Any]] = []
+    for item in posts:
+        if isinstance(item, dict):
+            valid_posts.append(item)
+    return valid_posts
+
+
+def save_posts(path: Path, posts: list[dict[str, Any]]) -> None:
+    ordered = sorted(posts, key=lambda row: str(row.get("updated_at", "")), reverse=True)
+    payload = {
+        "version": 1,
+        "updated_at": now_iso(),
+        "posts": ordered,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
 def read_track_rows(path: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
@@ -390,6 +468,31 @@ def maybe_mark_ghosted(path: Path) -> list[dict[str, str]]:
     if changed:
         write_track_rows(path, rows)
     return rows
+
+
+def upsert_track_item(path: Path, item: str, status: str) -> dict[str, str]:
+    rows = maybe_mark_ghosted(path)
+    now = now_iso()
+
+    for row in rows:
+        if row.get("item") != item:
+            continue
+        if not row.get("applied_at") or status == "applied":
+            row["applied_at"] = now
+        row["status"] = status
+        row["updated_at"] = now
+        write_track_rows(path, rows)
+        return row
+
+    row = {
+        "item": item,
+        "status": status,
+        "updated_at": now,
+        "applied_at": now,
+    }
+    rows.append(row)
+    write_track_rows(path, rows)
+    return row
 
 
 def status_token_to_full(token: str) -> str:
@@ -473,6 +576,100 @@ def load_env_style_file(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = unquote_env(value.strip())
     return values
+
+
+def parse_env_bool(value: str, default: bool = False) -> bool:
+    token = (value or "").strip().lower()
+    if token in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return True
+    if token in {"0", "false", "no", "off", "disabled", "disable"}:
+        return False
+    return default
+
+
+def parse_env_int(value: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return default
+    if parsed < minimum:
+        return minimum
+    if parsed > maximum:
+        return maximum
+    return parsed
+
+
+def parse_env_list(value: str) -> list[str]:
+    raw = str(value or "")
+    parts = [chunk.strip() for chunk in re.split(r"[\n,;|]", raw) if chunk.strip()]
+    seen: set[str] = set()
+    values: list[str] = []
+    for item in parts:
+        if item in seen:
+            continue
+        seen.add(item)
+        values.append(item)
+    return values
+
+
+def auto_config_file(root: Path) -> Path:
+    return root / AUTO_CONFIG_FILE
+
+
+def load_auto_config(root: Path) -> AutoConfig:
+    path = auto_config_file(root)
+    values = load_env_style_file(path)
+
+    env_search = parse_env_list(os.environ.get("CV_AUTO_SEARCH_URLS", ""))
+    config = AutoConfig(
+        enabled=parse_env_bool(values.get("AUTO_ENABLED", "0"), default=False),
+        search_urls=parse_env_list(values.get("AUTO_SEARCH_URLS", "")) or env_search,
+        include_keywords=parse_env_list(values.get("AUTO_INCLUDE_KEYWORDS", "")),
+        exclude_keywords=parse_env_list(values.get("AUTO_EXCLUDE_KEYWORDS", "")),
+        min_score=parse_env_int(values.get("AUTO_MIN_SCORE", "60"), default=60, minimum=0, maximum=100),
+        max_posts=parse_env_int(values.get("AUTO_MAX_POSTS", "12"), default=12, minimum=1, maximum=200),
+        max_links_per_seed=parse_env_int(values.get("AUTO_MAX_LINKS_PER_SEED", "25"), default=25, minimum=1, maximum=200),
+        auto_apply=parse_env_bool(values.get("AUTO_APPLY", "1"), default=True),
+        notify=parse_env_bool(values.get("AUTO_NOTIFY", "1"), default=True),
+        last_run_at=(values.get("AUTO_LAST_RUN_AT", "") or "").strip(),
+        last_seeked=parse_env_int(values.get("AUTO_LAST_SEEKED", "0"), default=0, minimum=0, maximum=1000000),
+        last_parsed=parse_env_int(values.get("AUTO_LAST_PARSED", "0"), default=0, minimum=0, maximum=1000000),
+        last_filtered=parse_env_int(values.get("AUTO_LAST_FILTERED", "0"), default=0, minimum=0, maximum=1000000),
+        last_stored=parse_env_int(values.get("AUTO_LAST_STORED", "0"), default=0, minimum=0, maximum=1000000),
+        last_applied=parse_env_int(values.get("AUTO_LAST_APPLIED", "0"), default=0, minimum=0, maximum=1000000),
+        last_error=(values.get("AUTO_LAST_ERROR", "") or "").strip(),
+    )
+    return config
+
+
+def save_auto_config(root: Path, config: AutoConfig) -> Path:
+    path = auto_config_file(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = "\n".join(
+        [
+            "# cv automation settings",
+            "# AUTO_SEARCH_URLS accepts comma-separated seed URLs.",
+            f"AUTO_ENABLED={quote_env('1' if config.enabled else '0')}",
+            f"AUTO_SEARCH_URLS={quote_env(','.join(config.search_urls))}",
+            f"AUTO_INCLUDE_KEYWORDS={quote_env(','.join(config.include_keywords))}",
+            f"AUTO_EXCLUDE_KEYWORDS={quote_env(','.join(config.exclude_keywords))}",
+            f"AUTO_MIN_SCORE={quote_env(str(config.min_score))}",
+            f"AUTO_MAX_POSTS={quote_env(str(config.max_posts))}",
+            f"AUTO_MAX_LINKS_PER_SEED={quote_env(str(config.max_links_per_seed))}",
+            f"AUTO_APPLY={quote_env('1' if config.auto_apply else '0')}",
+            f"AUTO_NOTIFY={quote_env('1' if config.notify else '0')}",
+            f"AUTO_LAST_RUN_AT={quote_env(config.last_run_at)}",
+            f"AUTO_LAST_SEEKED={quote_env(str(config.last_seeked))}",
+            f"AUTO_LAST_PARSED={quote_env(str(config.last_parsed))}",
+            f"AUTO_LAST_FILTERED={quote_env(str(config.last_filtered))}",
+            f"AUTO_LAST_STORED={quote_env(str(config.last_stored))}",
+            f"AUTO_LAST_APPLIED={quote_env(str(config.last_applied))}",
+            f"AUTO_LAST_ERROR={quote_env(config.last_error)}",
+            "",
+        ]
+    )
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 def save_telegram_config(bot_token: str, chat_id: str) -> Path:
@@ -718,42 +915,50 @@ def editor_command() -> str:
 
 def cmd_help() -> int:
     print(
-        """cv - resume workflow CLI
+        textwrap.dedent(
+            """\
+            cv - resume workflow CLI
 
-Usage:
-  cv init [name]
-  cv install [target]
-  cv current
-  cv jobs [job] [name]
-  cv title <new title>
-  cv section [list|show|set|add|edit] ...
-  cv skills [list|add|rm|manage] ...
-  cv exp [list|add|rm|manage] ...
-  cv tags [text|url]
-  cv say <question>
-  cv fit <text|url>
-  cv tailor [text|url]
-  cv track [item] [status]
-    cv ats [senior]
-    cv ci telegram [setup|status|send] [message]
-  cv help
+            Usage:
+                cv init [name]
+                cv install [target]
+                cv current
+                cv jobs [job] [name]
+                cv title <new title>
+                cv section [list|show|set|add|edit] ...
+                cv skills [list|add|rm|manage] ...
+                cv exp [list|add|rm|manage] ...
+                cv tags [text|url]
+                cv say <question>
+                cv fit <text|url>
+                cv tailor [text|url]
+                cv track [item] [status]
+                cv posts [list|all|filtered|show <index>]
+                cv auto [status|enable|disable]
+                cv ats [senior]
+                cv ci telegram [setup|status|send] [message]
+                cv help
 
-Examples:
-  cv init john-bang-gang
-  cv jobs frontend
-  cv title Frontend Developer
-  cv skills add \"React\"
-  cv exp add \"Acme|Frontend Engineer|2022-01|Present\"
-  cv fit \"Senior Frontend role with React TypeScript\"
-  cv fit https://example.com/jobs/frontend-engineer
-    cv tailor https://example.com/jobs/frontend-engineer
-    cv tailor \"Senior frontend role with React TypeScript\"
-    cv tags
-    cv tags https://example.com/jobs/frontend-engineer
-    cv ats senior
-    cv ci telegram
-    cv ci telegram send \"Build finished\"
-"""
+            Examples:
+                cv init john-bang-gang
+                cv jobs frontend
+                cv title Frontend Developer
+                cv skills add \"React\"
+                cv exp add \"Acme|Frontend Engineer|2022-01|Present\"
+                cv fit \"Senior Frontend role with React TypeScript\"
+                cv fit https://example.com/jobs/frontend-engineer
+                cv tailor https://example.com/jobs/frontend-engineer
+                cv tailor \"Senior frontend role with React TypeScript\"
+                cv tags
+                cv tags https://example.com/jobs/frontend-engineer
+                cv posts
+                cv auto status
+                cv auto enable
+                cv ats senior
+                cv ci telegram
+                cv ci telegram send \"Build finished\"
+            """
+        )
     )
     return 0
 
@@ -1859,6 +2064,475 @@ def keywords_from_text(text: str, top_n: int = 40) -> list[str]:
     return extract_meaningful_tags(text, max_tags=top_n)
 
 
+def normalize_url_for_store(url: str) -> str:
+    raw = url.strip()
+    if not raw:
+        return ""
+
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return raw
+
+    filtered_pairs: list[tuple[str, str]] = []
+    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=False):
+        key_l = key.lower()
+        if key_l.startswith("utm_") or key_l in {"gclid", "fbclid", "trk", "tracking", "source"}:
+            continue
+        filtered_pairs.append((key, value))
+
+    clean_path = parsed.path or "/"
+    if clean_path != "/":
+        clean_path = clean_path.rstrip("/") or "/"
+
+    return urllib.parse.urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            clean_path,
+            "",
+            urllib.parse.urlencode(filtered_pairs),
+            "",
+        )
+    )
+
+
+def looks_like_job_url(url: str) -> bool:
+    lowered = url.lower()
+    markers = [
+        "job", "jobs", "career", "careers", "position", "positions", "opening", "openings", "opportunity",
+        "greenhouse", "lever", "workday", "ashby", "smartrecruiters", "icims", "recruit",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
+def fetch_url_html(url: str) -> tuple[bool, str, str, str]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content_type = response.headers.get("Content-Type", "")
+            raw = response.read()
+    except Exception as exc:
+        return False, "", "", str(exc)
+
+    charset_match = re.search(r"charset=([A-Za-z0-9_-]+)", content_type)
+    encoding = charset_match.group(1) if charset_match else "utf-8"
+    html = raw.decode(encoding, errors="replace")
+    return True, html, content_type, ""
+
+
+def extract_links_from_html(base_url: str, html: str) -> list[str]:
+    links: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"href\s*=\s*[\"']([^\"']+)[\"']", html, flags=re.IGNORECASE):
+        href = raw.strip()
+        if not href or href.startswith("#"):
+            continue
+        if href.lower().startswith(("javascript:", "mailto:", "tel:")):
+            continue
+
+        absolute = urllib.parse.urljoin(base_url, href)
+        parsed = urllib.parse.urlparse(absolute)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            continue
+
+        normalized = normalize_url_for_store(absolute)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        links.append(normalized)
+    return links
+
+
+def discover_job_urls(seed_url: str, max_links: int) -> list[str]:
+    normalized_seed = normalize_url_for_store(seed_url)
+    if not normalized_seed:
+        return []
+
+    urls: list[str] = []
+    if looks_like_job_url(normalized_seed):
+        urls.append(normalized_seed)
+
+    ok, html, content_type, error = fetch_url_html(normalized_seed)
+    if not ok:
+        warn(f"auto: seed fetch failed for {normalized_seed}: {error}")
+        return urls or [normalized_seed]
+
+    html_like = "html" in content_type.lower() or "<html" in html[:2000].lower()
+    if not html_like:
+        return urls or [normalized_seed]
+
+    candidates = extract_links_from_html(normalized_seed, html)
+    for candidate in candidates:
+        if looks_like_job_url(candidate):
+            urls.append(candidate)
+
+    if not urls:
+        urls.append(normalized_seed)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+        if len(deduped) >= max_links:
+            break
+    return deduped
+
+
+def fit_grade(score: int) -> str:
+    if score >= 80:
+        return "A"
+    if score >= 65:
+        return "B"
+    if score >= 50:
+        return "C"
+    return "D"
+
+
+def analyze_job_fit(job_text: str, resume_keywords: set[str]) -> dict[str, Any]:
+    job_tags = list(dict.fromkeys(keywords_from_text(job_text, top_n=60)))
+    common = [tag for tag in job_tags if tag in resume_keywords]
+    missing = [tag for tag in job_tags if tag not in resume_keywords]
+    score = int(round((len(common) / len(job_tags)) * 100)) if job_tags else 0
+    return {
+        "job_tags": job_tags,
+        "matched_tags": common,
+        "missing_tags": missing,
+        "score": score,
+        "grade": fit_grade(score),
+    }
+
+
+def keyword_filter_reason(job_text: str, include_keywords: list[str], exclude_keywords: list[str]) -> str:
+    lowered = job_text.lower()
+
+    include = [item.lower().strip() for item in include_keywords if item.strip()]
+    exclude = [item.lower().strip() for item in exclude_keywords if item.strip()]
+
+    if include and not any(token in lowered for token in include):
+        return "missing include keywords"
+
+    for token in exclude:
+        if token in lowered:
+            return f"matched exclude keyword: {token}"
+
+    return ""
+
+
+def infer_company_from_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower().split("@")[-1].split(":")[0]
+    host = host[4:] if host.startswith("www.") else host
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    raw = ""
+    if host.endswith("lever.co") and path_parts:
+        raw = path_parts[0]
+    elif host.endswith("greenhouse.io") and path_parts:
+        raw = path_parts[0]
+    elif host.endswith("ashbyhq.com") and path_parts:
+        raw = path_parts[0]
+    elif host.endswith("myworkdayjobs.com") and path_parts:
+        raw = path_parts[0]
+    else:
+        raw = host.split(".")[0] if host else "company"
+
+    return pretty_name(slugify(raw))
+
+
+def infer_title_from_text_and_url(job_text: str, url: str) -> str:
+    blocked_terms = re.compile(
+        r"(job description|responsibilities|requirements|about us|benefits|equal opportunity|apply now)",
+        flags=re.IGNORECASE,
+    )
+    title_terms = re.compile(
+        r"\b(engineer|developer|manager|designer|scientist|architect|lead|principal|intern|analyst|consultant)\b",
+        flags=re.IGNORECASE,
+    )
+
+    compact = re.sub(r"\s+", " ", job_text).strip()
+    inline_match = re.search(
+        r"\b((?:senior|staff|lead|principal|junior|sr\.?|jr\.?)?\s*[A-Za-z0-9+/#& -]{0,50}(?:engineer|developer|manager|designer|scientist|architect|analyst|consultant|intern))\b",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if inline_match:
+        candidate = re.sub(r"\s+", " ", inline_match.group(1)).strip(" -|:")
+        if 6 <= len(candidate) <= 90 and not blocked_terms.search(candidate):
+            return candidate
+
+    lines = [line.strip(" -|:\t") for line in job_text.splitlines() if line.strip()]
+    for line in lines[:120]:
+        if len(line) < 6 or len(line) > 120:
+            continue
+        if blocked_terms.search(line):
+            continue
+        if title_terms.search(line):
+            return line
+
+    for line in lines[:40]:
+        if 6 <= len(line) <= 100 and not blocked_terms.search(line):
+            return line
+
+    parsed = urllib.parse.urlparse(url)
+    path_parts = [slugify(part) for part in parsed.path.split("/") if slugify(part)]
+    if path_parts:
+        fallback = path_parts[-1]
+        if fallback in {"jobs", "job", "careers", "positions", "apply", "view"} and len(path_parts) >= 2:
+            fallback = path_parts[-2]
+        return pretty_name(fallback)
+    return "Role"
+
+
+def build_post_item_label(company: str, title: str) -> str:
+    left = company.strip() or "Company"
+    right = title.strip() or "Role"
+    return f"{left} | {right}"[:140]
+
+
+def upsert_post_record(posts: list[dict[str, Any]], record: dict[str, Any]) -> bool:
+    target_url = normalize_url_for_store(str(record.get("url", "")))
+    for row in posts:
+        row_url = normalize_url_for_store(str(row.get("url", "")))
+        if row_url != target_url:
+            continue
+
+        first_seen = row.get("first_seen_at") or row.get("discovered_at") or now_iso()
+        existing_apply_status = str(row.get("apply_status", "")).strip()
+        existing_applied_at = str(row.get("applied_at", "")).strip()
+        existing_track_item = str(row.get("track_item", "")).strip()
+
+        row.update(record)
+        row["first_seen_at"] = first_seen
+        if existing_apply_status == "applied" and row.get("apply_status") != "applied":
+            row["apply_status"] = existing_apply_status
+        if existing_applied_at and not row.get("applied_at"):
+            row["applied_at"] = existing_applied_at
+        if existing_track_item and not row.get("track_item"):
+            row["track_item"] = existing_track_item
+        return False
+
+    posts.append(record)
+    return True
+
+
+def attempt_playwright_auto_apply(url: str) -> tuple[str, str]:
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # type: ignore
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except Exception as exc:
+        return "manual-required", f"playwright unavailable: {exc}"
+
+    selectors = [
+        "button:has-text('Easy Apply')",
+        "a:has-text('Easy Apply')",
+        "button:has-text('Apply Now')",
+        "a:has-text('Apply Now')",
+        "button:has-text('Apply')",
+        "a:has-text('Apply')",
+        "button[type='submit']",
+    ]
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(500)
+
+            clicked = False
+            click_note = ""
+
+            for selector in selectors:
+                locator = page.locator(selector)
+                try:
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                if count <= 0:
+                    continue
+                locator.first.click(timeout=7000)
+                clicked = True
+                click_note = f"clicked selector: {selector}"
+                break
+
+            if not clicked:
+                href = page.evaluate(
+                    """() => {
+                        const targets = Array.from(document.querySelectorAll('a[href], button'));
+                        for (const el of targets) {
+                            const text = (el.textContent || '').toLowerCase();
+                            if (text.includes('apply')) {
+                                if (el.tagName.toLowerCase() === 'a') {
+                                    return el.getAttribute('href') || '';
+                                }
+                                try { el.click(); return '__BUTTON_CLICKED__'; } catch (_) {}
+                            }
+                        }
+                        return '';
+                    }"""
+                )
+
+                if isinstance(href, str) and href:
+                    if href == "__BUTTON_CLICKED__":
+                        clicked = True
+                        click_note = "clicked generic apply button"
+                    else:
+                        target = urllib.parse.urljoin(url, href)
+                        page.goto(target, wait_until="domcontentloaded", timeout=45000)
+                        clicked = True
+                        click_note = f"navigated to apply link: {target}"
+
+            browser.close()
+
+        if clicked:
+            return "applied", click_note or "apply interaction completed"
+        return "manual-required", "could not find apply control"
+    except PlaywrightTimeoutError as exc:
+        return "failed", f"playwright timeout: {exc}"
+    except Exception as exc:
+        return "failed", f"playwright error: {exc}"
+
+
+def send_auto_telegram_notification(message: str) -> tuple[bool, str]:
+    config = load_telegram_config()
+    token = (config.get("bot_token") or "").strip()
+    chat_id = (config.get("chat_id") or "").strip()
+    if not token or not chat_id:
+        return False, "telegram not configured"
+    return send_telegram_message(token, chat_id, message[:4000])
+
+
+def run_auto_pipeline(root: Path, state: CVState, config: AutoConfig) -> dict[str, Any]:
+    if not config.search_urls:
+        die("No AUTO_SEARCH_URLS configured. Edit .cv/auto.env or set CV_AUTO_SEARCH_URLS.")
+
+    resume = ensure_resume_exists(root, state)
+    resume_text = read_text(resume)
+
+    provider, parsed, hint = run_external_ats_parser(resume_text, auto_setup=False)
+    if hint:
+        warn(hint)
+
+    resume_tags = build_tags_from_resume(resume_text)
+    ats_seed = ats_enrichment_text(parsed)
+    if ats_seed:
+        resume_tags = merge_unique_tags(resume_tags, extract_meaningful_tags(ats_seed, max_tags=35), limit=60)
+    resume_keywords = set(resume_tags)
+
+    posts_path = ensure_posts_file(root, state)
+    posts = load_posts(posts_path)
+
+    discovered_urls: list[str] = []
+    seen_urls: set[str] = set()
+    for seed in config.search_urls:
+        seed = seed.strip()
+        if not seed:
+            continue
+        for url in discover_job_urls(seed, config.max_links_per_seed):
+            normalized = normalize_url_for_store(url)
+            if not normalized or normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+            discovered_urls.append(normalized)
+
+    parsed_count = 0
+    filtered_count = 0
+    stored_count = 0
+    applied_count = 0
+    accepted_posts: list[dict[str, Any]] = []
+    track_path = ensure_track_file(root, state)
+
+    for url in discovered_urls:
+        if parsed_count >= config.max_posts:
+            break
+
+        try:
+            job_text = extract_primary_text_from_url(url)
+        except CVError as exc:
+            warn(f"auto: failed to parse {url}: {exc}")
+            continue
+
+        normalized_text = re.sub(r"\s+", " ", job_text).strip()
+        if len(normalized_text) < 60:
+            continue
+        if len(normalized_text) > 20000:
+            normalized_text = normalized_text[:20000]
+
+        parsed_count += 1
+
+        company = infer_company_from_url(url)
+        title = infer_title_from_text_and_url(job_text, url)
+        analysis = analyze_job_fit(normalized_text, resume_keywords)
+        filter_reason = keyword_filter_reason(normalized_text, config.include_keywords, config.exclude_keywords)
+        accepted = analysis["score"] >= config.min_score and not filter_reason
+
+        apply_status = "not-attempted"
+        apply_detail = ""
+        applied_at = ""
+        track_item = ""
+
+        if accepted and config.auto_apply:
+            apply_status, apply_detail = attempt_playwright_auto_apply(url)
+            if apply_status == "applied":
+                applied_at = now_iso()
+                track_item = build_post_item_label(company, title)
+                upsert_track_item(track_path, track_item, "applied")
+                applied_count += 1
+
+        if not accepted:
+            filtered_count += 1
+
+        now = now_iso()
+        record: dict[str, Any] = {
+            "id": hashlib.sha1(url.encode("utf-8")).hexdigest()[:12],
+            "url": url,
+            "company": company,
+            "title": title,
+            "status": "accepted" if accepted else "filtered",
+            "filter_reason": filter_reason,
+            "fit_score": analysis["score"],
+            "grade": analysis["grade"],
+            "job_tags": analysis["job_tags"][:60],
+            "matched_tags": analysis["matched_tags"][:30],
+            "missing_tags": analysis["missing_tags"][:30],
+            "summary_snippet": normalized_text[:260],
+            "updated_at": now,
+            "discovered_at": now,
+            "apply_status": apply_status,
+            "apply_detail": apply_detail,
+            "applied_at": applied_at,
+            "track_item": track_item,
+            "ats_source": provider,
+        }
+
+        upsert_post_record(posts, record)
+        stored_count += 1
+        if accepted:
+            accepted_posts.append(record)
+
+    save_posts(posts_path, posts)
+
+    accepted_posts.sort(key=lambda row: int(row.get("fit_score", 0)), reverse=True)
+    return {
+        "posts_path": posts_path,
+        "discovered": len(discovered_urls),
+        "parsed": parsed_count,
+        "filtered": filtered_count,
+        "stored": stored_count,
+        "applied": applied_count,
+        "accepted": accepted_posts,
+        "ats_source": provider,
+    }
+
+
 def cmd_fit(args: list[str]) -> int:
     if not args:
         die("Usage: cv fit <text|url>")
@@ -2110,24 +2784,176 @@ def cmd_track(args: list[str]) -> int:
     if not item:
         die("Track item cannot be empty")
 
-    now = now_iso()
-    found = False
-    for row in rows:
-        if row["item"] != item:
-            continue
-        found = True
-        if not row.get("applied_at") or status == "applied":
-            row["applied_at"] = now
-        row["status"] = status
-        row["updated_at"] = now
-        break
-
-    if not found:
-        rows.append({"item": item, "status": status, "updated_at": now, "applied_at": now})
-
-    write_track_rows(path, rows)
+    upsert_track_item(path, item, status)
     print(f"Tracked \"{item}\" as {status}")
     return 0
+
+
+def cmd_posts(args: list[str]) -> int:
+    root = require_project()
+    state = load_state(root)
+    path = ensure_posts_file(root, state)
+    posts = load_posts(path)
+    posts = sorted(posts, key=lambda row: str(row.get("updated_at", "")), reverse=True)
+
+    if not posts:
+        print("No parsed posts yet.")
+        print("Run: cv auto enable")
+        return 0
+
+    if args and args[0].lower() == "show":
+        if len(args) < 2 or not args[1].isdigit():
+            die("Usage: cv posts show <index>")
+        idx = int(args[1])
+        if idx < 1 or idx > len(posts):
+            die(f"Index out of range. Available: 1..{len(posts)}")
+
+        row = posts[idx - 1]
+        print(f"Index: {idx}")
+        print(f"URL: {row.get('url', '')}")
+        print(f"Company: {row.get('company', '')}")
+        print(f"Title: {row.get('title', '')}")
+        print(f"Status: {row.get('status', '')}")
+        print(f"Fit: {row.get('fit_score', 0)}/100 ({row.get('grade', 'D')})")
+        print(f"Apply status: {row.get('apply_status', '')}")
+        print(f"Apply detail: {row.get('apply_detail', '')}")
+        print(f"Tracked item: {row.get('track_item', '')}")
+        print(f"Updated: {row.get('updated_at', '')}")
+        print("Matched tags: " + ", ".join(row.get("matched_tags", [])[:25]))
+        print("Missing tags: " + ", ".join(row.get("missing_tags", [])[:25]))
+        snippet = str(row.get("summary_snippet", ""))
+        if snippet:
+            print("Snippet:")
+            print(snippet)
+        return 0
+
+    mode = args[0].lower() if args else "accepted"
+    if mode in {"list", "accepted"}:
+        rows = [row for row in posts if str(row.get("status", "")) == "accepted"]
+    elif mode == "filtered":
+        rows = [row for row in posts if str(row.get("status", "")) == "filtered"]
+    elif mode == "all":
+        rows = posts
+    else:
+        die("Usage: cv posts [list|all|filtered|show <index>]")
+
+    print(f"Posts file: {path.relative_to(root)}")
+    print(f"Showing {len(rows)} of {len(posts)} posts")
+    print(f"{'#':>3} {'GRADE':5} {'FIT':5} {'STATUS':10} {'APPLY':14} {'COMPANY':16} {'TITLE':32}")
+    print(f"{'-' * 3} {'-' * 5} {'-' * 5} {'-' * 10} {'-' * 14} {'-' * 16} {'-' * 32}")
+
+    for idx, row in enumerate(rows, start=1):
+        grade = str(row.get("grade", "D"))[:5]
+        score = int(row.get("fit_score", 0)) if str(row.get("fit_score", "")).isdigit() else row.get("fit_score", 0)
+        status = str(row.get("status", ""))[:10]
+        apply_status = str(row.get("apply_status", ""))[:14]
+        company = str(row.get("company", ""))[:16]
+        title = str(row.get("title", ""))[:32]
+        print(f"{idx:>3} {grade:5} {str(score)[:5]:5} {status:10} {apply_status:14} {company:16} {title:32}")
+
+    print("Use: cv posts show <index> for full details")
+    return 0
+
+
+def cmd_auto(args: list[str]) -> int:
+    root = require_project()
+    state = load_state(root)
+    ensure_resume_exists(root, state)
+
+    action = args[0].strip().lower() if args else "status"
+    config = load_auto_config(root)
+    config_path = auto_config_file(root)
+    posts_path = ensure_posts_file(root, state)
+
+    if not config_path.is_file():
+        save_auto_config(root, config)
+
+    if action == "status":
+        posts = load_posts(posts_path)
+        accepted = sum(1 for row in posts if str(row.get("status", "")) == "accepted")
+        filtered = sum(1 for row in posts if str(row.get("status", "")) == "filtered")
+        print("Automation status")
+        print(f"Enabled: {'yes' if config.enabled else 'no'}")
+        print(f"Config: {config_path.relative_to(root)}")
+        print(f"Search seeds: {len(config.search_urls)}")
+        print(f"Min fit score: {config.min_score}")
+        print(f"Max parsed posts per run: {config.max_posts}")
+        print(f"Auto apply: {'yes' if config.auto_apply else 'no'}")
+        print(f"Telegram notify: {'yes' if config.notify else 'no'}")
+        print(f"Posts store: {posts_path.relative_to(root)}")
+        print(f"Stored posts: {len(posts)} (accepted={accepted}, filtered={filtered})")
+        print(f"Last run: {config.last_run_at or 'never'}")
+        if config.last_error:
+            print(f"Last error: {config.last_error}")
+        if not config.search_urls:
+            print("Hint: set AUTO_SEARCH_URLS in .cv/auto.env (comma-separated URLs)")
+        return 0
+
+    if action == "disable":
+        config.enabled = False
+        save_auto_config(root, config)
+        print("Automation disabled.")
+        print(f"Config: {config_path.relative_to(root)}")
+        return 0
+
+    if action == "enable":
+        config.enabled = True
+        save_auto_config(root, config)
+
+        try:
+            summary = run_auto_pipeline(root, state, config)
+            config.last_error = ""
+        except CVError as exc:
+            config.last_run_at = now_iso()
+            config.last_error = str(exc)
+            save_auto_config(root, config)
+            die(str(exc))
+
+        config.last_run_at = now_iso()
+        config.last_seeked = int(summary.get("discovered", 0))
+        config.last_parsed = int(summary.get("parsed", 0))
+        config.last_filtered = int(summary.get("filtered", 0))
+        config.last_stored = int(summary.get("stored", 0))
+        config.last_applied = int(summary.get("applied", 0))
+        save_auto_config(root, config)
+
+        print("Automation enabled.")
+        print(f"Discovered URLs: {summary.get('discovered', 0)}")
+        print(f"Parsed posts: {summary.get('parsed', 0)}")
+        print(f"Filtered out: {summary.get('filtered', 0)}")
+        print(f"Stored/updated: {summary.get('stored', 0)}")
+        print(f"Auto-applied: {summary.get('applied', 0)}")
+        print(f"Posts file: {posts_path.relative_to(root)}")
+        print(f"ATS source used: {summary.get('ats_source', '')}")
+
+        accepted: list[dict[str, Any]] = summary.get("accepted", [])
+        if accepted:
+            print("Top accepted:")
+            for row in accepted[:5]:
+                print(f"- {row.get('grade', 'D')} {row.get('fit_score', 0)}/100 | {row.get('company', '')} | {row.get('title', '')}")
+
+        if config.notify:
+            top = accepted[:3]
+            top_lines = [
+                f"- {row.get('grade', 'D')} {row.get('fit_score', 0)}/100 {row.get('company', '')} | {row.get('title', '')}"
+                for row in top
+            ]
+            summary_message = (
+                f"cv auto run ({state.current_job})\n"
+                f"discovered={summary.get('discovered', 0)} parsed={summary.get('parsed', 0)} "
+                f"filtered={summary.get('filtered', 0)} stored={summary.get('stored', 0)} applied={summary.get('applied', 0)}"
+            )
+            if top_lines:
+                summary_message += "\n" + "\n".join(top_lines)
+            ok, detail = send_auto_telegram_notification(summary_message)
+            if ok:
+                print("Telegram notification sent.")
+            else:
+                warn(f"Telegram notification skipped: {detail}")
+        return 0
+
+    die("Usage: cv auto [status|enable|disable]")
+    return 1
 
 
 def _run_setup_command(command: list[str]) -> tuple[bool, str]:
@@ -2560,6 +3386,10 @@ def dispatch(cmd: str, args: list[str]) -> int:
         return cmd_tailor(args)
     if cmd == "track":
         return cmd_track(args)
+    if cmd == "posts":
+        return cmd_posts(args)
+    if cmd == "auto":
+        return cmd_auto(args)
     if cmd == "ats":
         return cmd_ats(args)
     if cmd == "ci":
