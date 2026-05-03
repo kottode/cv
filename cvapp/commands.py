@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
 from typing import Callable
 
 from .config import CV_VERSION
@@ -32,39 +30,8 @@ def cmd_version(args: list[str]) -> int:
     return 0
 
 
-def cmd_install(args: list[str]) -> int:
-    target = Path(args[0]).expanduser() if args else (Path.home() / ".local" / "bin" / "cv")
-    repo_root = Path(__file__).resolve().parents[1]
-
-    source_cv = repo_root / "cv"
-    source_core = repo_root / "cv_core.py"
-    source_package = repo_root / "cvapp"
-
-    if not source_cv.is_file():
-        die(f"cv script not found at {source_cv}")
-    if not source_core.is_file():
-        die(f"cv_core.py not found at {source_core}")
-    if not source_package.is_dir():
-        die(f"cvapp package not found at {source_package}")
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_cv, target)
-    shutil.copy2(source_core, target.parent / "cv_core.py")
-
-    dest_package = target.parent / "cvapp"
-    if dest_package.exists():
-        shutil.rmtree(dest_package)
-    shutil.copytree(source_package, dest_package)
-
-    target.chmod(0o755)
-    print(f"Installed: {target}")
-    print(f"Ensure PATH contains: {target.parent}")
-    return 0
-
-
 COMMANDS: dict[str, CommandHandler] = {
     "init": cmd_init,
-    "install": cmd_install,
     "current": cmd_current,
     "jobs": cmd_jobs,
     "title": cmd_title,

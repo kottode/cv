@@ -56,13 +56,38 @@ def _run_setup_command(command: list[str]) -> tuple[bool, str]:
     return proc.returncode == 0, output
 
 
-def load_pyresparser_with_autosetup() -> tuple[Any | None, str | None]:
-    manual_hint = (
-        "python -m pip install --user pyresparser spacy nltk\n"
-        "python -m pip install --user --break-system-packages pyresparser spacy nltk\n"
+def _in_virtualenv() -> bool:
+    return (getattr(sys, "base_prefix", sys.prefix) != sys.prefix) or bool(os.environ.get("VIRTUAL_ENV"))
+
+
+def _manual_setup_hint() -> str:
+    if _in_virtualenv():
+        return (
+            f"{sys.executable} -m pip install pyresparser spacy nltk phonenumbers\n"
+            f"{sys.executable} -m spacy download en_core_web_sm\n"
+            f"{sys.executable} -m nltk.downloader stopwords punkt averaged_perceptron_tagger words"
+        )
+    return (
+        "python -m pip install --user pyresparser spacy nltk phonenumbers\n"
+        "python -m pip install --user --break-system-packages pyresparser spacy nltk phonenumbers\n"
         "python -m spacy download en_core_web_sm\n"
         "python -m nltk.downloader stopwords punkt averaged_perceptron_tagger words"
     )
+
+
+def _pip_install_setup_steps() -> list[list[str]]:
+    base = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    packages = ["pyresparser", "spacy", "nltk", "phonenumbers"]
+    if _in_virtualenv():
+        return [base + packages]
+    return [
+        base + ["--user"] + packages,
+        base + ["--user", "--break-system-packages"] + packages,
+    ]
+
+
+def load_pyresparser_with_autosetup() -> tuple[Any | None, str | None]:
+    manual_hint = _manual_setup_hint()
 
     try:
         from pyresparser import ResumeParser  # type: ignore
@@ -72,29 +97,7 @@ def load_pyresparser_with_autosetup() -> tuple[Any | None, str | None]:
         initial_error = str(initial_exc)
 
     setup_steps = [
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--user",
-            "pyresparser",
-            "spacy",
-            "nltk",
-        ],
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--user",
-            "--break-system-packages",
-            "pyresparser",
-            "spacy",
-            "nltk",
-        ],
+        *_pip_install_setup_steps(),
         [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
         [sys.executable, "-m", "nltk.downloader", "stopwords", "punkt", "averaged_perceptron_tagger", "words"],
     ]
@@ -280,10 +283,7 @@ def run_external_ats_parser(
             parse_hint = (
                 f"External parser execution failed: {retry_exc}\n"
                 "Try setup commands:\n"
-                "python -m pip install --user pyresparser spacy nltk\n"
-                "python -m pip install --user --break-system-packages pyresparser spacy nltk\n"
-                "python -m spacy download en_core_web_sm\n"
-                "python -m nltk.downloader stopwords punkt averaged_perceptron_tagger words"
+                f"{_manual_setup_hint()}"
             )
             if failed_runtime_steps:
                 parse_hint += "\nRuntime setup failures:\n- " + "\n- ".join(failed_runtime_steps)

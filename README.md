@@ -10,6 +10,10 @@ Resume CLI for init, profile switching, section management, tailoring, ATS check
 ./install.sh
 ```
 
+The installer creates an isolated runtime at `~/.local/bin/.cv-runtime`, installs dependencies from `requirements.txt` and `requirements-ats.txt`, and writes a launcher so `cv` runs without manual venv activation.
+
+Re-running install is incremental: dependency install is skipped when `requirements.txt` has not changed. Use `--force` to reinstall dependencies.
+
 Optional dependencies:
 
 ```bash
@@ -108,7 +112,6 @@ cvapp/
 
 ```text
 cv init <name>
-cv install [target]
 cv current
 cv jobs [job] [name]
 cv title <new title>
@@ -120,7 +123,7 @@ cv say <question>
 cv fit <text|url>
 cv tailor [text|url]
 cv track [item] [status]
-cv posts [list|all|filtered|show <index>]
+cv posts [fetch|fit|list|all|filtered|show <index>]
 cv auto [status|enable|disable]
 cv ats [senior]
 cv ci telegram [setup|status|send] [message]
@@ -266,17 +269,26 @@ jobs/<job>/track.csv
 
 ## Parsed Posts
 
-`cv auto enable` stores parsed and graded post records in:
+`cv posts fetch` stores fetched post records in:
 
 ```text
 jobs/<job>/posts.json
 ```
 
-View them with:
+Score and filter cached posts with:
 
 ```bash
+cv posts fit
+```
+
+View cached and filtered lists with:
+
+```bash
+cv posts fetch
+cv posts fit
 cv posts
 cv posts all
+cv posts filtered
 cv posts show 1
 ```
 
@@ -290,7 +302,7 @@ cv auto disable
 
 `cv auto enable` runs one automation cycle using `.cv/auto.env` settings:
 
-- seek job links from `AUTO_SEARCH_URLS`
+- fetch jobs with JobSpy (`AUTO_SEARCH_TERMS`, `AUTO_JOB_SITES`, `AUTO_SEARCH_LOCATION`)
 - parse and fit-score each post
 - grade and store to `jobs/<job>/posts.json`
 - optionally auto-apply with Playwright (`AUTO_APPLY=1`)

@@ -17,9 +17,14 @@ def load_auto_config(root: Path) -> AutoConfig:
     values = load_env_style_file(path)
 
     env_search = parse_env_list(os.environ.get("CV_AUTO_SEARCH_URLS", ""))
+    env_terms = parse_env_list(os.environ.get("CV_AUTO_SEARCH_TERMS", ""))
     return AutoConfig(
         enabled=parse_env_bool(values.get("AUTO_ENABLED", "0"), default=False),
         search_urls=parse_env_list(values.get("AUTO_SEARCH_URLS", "")) or env_search,
+        search_terms=parse_env_list(values.get("AUTO_SEARCH_TERMS", "")) or env_terms,
+        job_sites=parse_env_list(values.get("AUTO_JOB_SITES", "linkedin,indeed")),
+        search_location=(values.get("AUTO_SEARCH_LOCATION", "remote") or "remote").strip(),
+        results_wanted=parse_env_int(values.get("AUTO_RESULTS_WANTED", "40"), default=40, minimum=1, maximum=500),
         include_keywords=parse_env_list(values.get("AUTO_INCLUDE_KEYWORDS", "")),
         exclude_keywords=parse_env_list(values.get("AUTO_EXCLUDE_KEYWORDS", "")),
         min_score=parse_env_int(values.get("AUTO_MIN_SCORE", "60"), default=60, minimum=0, maximum=100),
@@ -48,9 +53,13 @@ def save_auto_config(root: Path, config: AutoConfig) -> Path:
     content = "\n".join(
         [
             "# cv automation settings",
-            "# AUTO_SEARCH_URLS accepts comma-separated seed URLs.",
+            "# AUTO_SEARCH_TERMS accepts comma-separated terms for JobSpy.",
             f"AUTO_ENABLED={quote_env('1' if config.enabled else '0')}",
             f"AUTO_SEARCH_URLS={quote_env(','.join(config.search_urls))}",
+            f"AUTO_SEARCH_TERMS={quote_env(','.join(config.search_terms))}",
+            f"AUTO_JOB_SITES={quote_env(','.join(config.job_sites))}",
+            f"AUTO_SEARCH_LOCATION={quote_env(config.search_location)}",
+            f"AUTO_RESULTS_WANTED={quote_env(str(config.results_wanted))}",
             f"AUTO_INCLUDE_KEYWORDS={quote_env(','.join(config.include_keywords))}",
             f"AUTO_EXCLUDE_KEYWORDS={quote_env(','.join(config.exclude_keywords))}",
             f"AUTO_MIN_SCORE={quote_env(str(config.min_score))}",

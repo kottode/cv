@@ -1,28 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-import re
 from pathlib import Path
 from typing import Any
 
 from ...config import AutoConfig, CVState
 from ...errors import CVError, die, warn
 from ...internal.auto_config import auto_config_file, load_auto_config, save_auto_config
-from ...internal import browser, telegram, web
+from ...internal import browser, telegram
 from ...internal.ats import ats_enrichment_text, run_external_ats_parser
 from ...internal.project import ensure_resume_exists, load_state, read_text, require_project
-from ...internal.resume_analysis import (
-    build_post_item_label,
-    build_tags_from_resume,
-    extract_meaningful_tags,
-    infer_company_from_url,
-    infer_title_from_text_and_url,
-    merge_unique_tags,
-)
+from ...internal.posts_pipeline import best_effort_apply, fetch_posts_from_jobspy, fit_cached_posts
+from ...internal.resume_analysis import build_tags_from_resume, extract_meaningful_tags, merge_unique_tags
 from ...strings import USAGE_AUTO
 from ...utils import now_iso
-from ..fit.api import analyze_job_fit, keyword_filter_reason
-from ..posts.api import ensure_posts_file, load_posts, save_posts, upsert_post_record
+from ..posts.api import ensure_posts_file, load_posts, save_posts
 from ..track.api import ensure_track_file, upsert_item
 
 def notify(message: str) -> tuple[bool, str]:
@@ -35,9 +26,6 @@ def notify(message: str) -> tuple[bool, str]:
 
 
 def run_auto_pipeline(root: Path, state: CVState, config: AutoConfig) -> dict[str, Any]:
-    if not config.search_urls:
-        die("No AUTO_SEARCH_URLS configured. Edit .cv/auto.env or set CV_AUTO_SEARCH_URLS.")
-
     resume = ensure_resume_exists(root, state)
     resume_text = read_text(resume)
 
@@ -49,105 +37,38 @@ def run_auto_pipeline(root: Path, state: CVState, config: AutoConfig) -> dict[st
     ats_seed = ats_enrichment_text(parsed)
     if ats_seed:
         resume_tags = merge_unique_tags(resume_tags, extract_meaningful_tags(ats_seed, max_tags=35), limit=60)
-    resume_keywords = set(resume_tags)
 
     posts_path = ensure_posts_file(root, state)
     posts = load_posts(posts_path)
+    fetch_summary = fetch_posts_from_jobspy(root, state, config, posts)
+    fit_summary = fit_cached_posts(root, state, config, posts, force=False)
 
-    discovered_urls: list[str] = []
-    seen_urls: set[str] = set()
-    for seed in config.search_urls:
-        seed = seed.strip()
-        if not seed:
-            continue
-        for url in web.discover_job_urls(seed, config.max_links_per_seed):
-            normalized = web.normalize_url(url)
-            if not normalized or normalized in seen_urls:
-                continue
-            seen_urls.add(normalized)
-            discovered_urls.append(normalized)
-
-    parsed_count = 0
-    filtered_count = 0
-    stored_count = 0
-    applied_count = 0
-    accepted_posts: list[dict[str, Any]] = []
+    accepted_posts: list[dict[str, Any]] = fit_summary.get("accepted", [])
     track_path = ensure_track_file(root, state)
 
-    for url in discovered_urls:
-        if parsed_count >= config.max_posts:
-            break
+    apply_summary = best_effort_apply(
+        accepted_posts,
+        max_items=config.max_posts,
+        auto_apply=config.auto_apply,
+        apply_func=browser.attempt_auto_apply,
+        upsert_track_item=lambda item, status: upsert_item(track_path, item, status),
+    )
 
-        try:
-            job_text = web.extract_primary_text(url)
-        except CVError as exc:
-            warn(f"auto: failed to parse {url}: {exc}")
-            continue
+    stored_count = int(fetch_summary.get("added", 0)) + int(fetch_summary.get("updated", 0))
+    discovered_count = int(fetch_summary.get("fetched_rows", 0))
+    parsed_count = int(fit_summary.get("scored", 0)) + int(fit_summary.get("cached", 0))
+    filtered_count = int(fit_summary.get("filtered", 0))
+    applied_count = int(apply_summary.get("applied", 0))
 
-        normalized_text = re.sub(r"\s+", " ", job_text).strip()
-        if len(normalized_text) < 60:
-            continue
-        if len(normalized_text) > 20000:
-            normalized_text = normalized_text[:20000]
-
-        parsed_count += 1
-
-        company = infer_company_from_url(url)
-        title = infer_title_from_text_and_url(job_text, url)
-        analysis = analyze_job_fit(normalized_text, resume_keywords)
-        filter_reason = keyword_filter_reason(normalized_text, config.include_keywords, config.exclude_keywords)
-        accepted = analysis["score"] >= config.min_score and not filter_reason
-
-        apply_status = "not-attempted"
-        apply_detail = ""
-        applied_at = ""
-        track_item = ""
-
-        if accepted and config.auto_apply:
-            apply_status, apply_detail = browser.attempt_auto_apply(url)
-            if apply_status == "applied":
-                applied_at = now_iso()
-                track_item = build_post_item_label(company, title)
-                upsert_item(track_path, track_item, "applied")
-                applied_count += 1
-
-        if not accepted:
-            filtered_count += 1
-
-        now = now_iso()
-        record: dict[str, Any] = {
-            "id": hashlib.sha1(url.encode("utf-8")).hexdigest()[:12],
-            "url": url,
-            "company": company,
-            "title": title,
-            "status": "accepted" if accepted else "filtered",
-            "filter_reason": filter_reason,
-            "fit_score": analysis["score"],
-            "grade": analysis["grade"],
-            "job_tags": analysis["job_tags"][:60],
-            "matched_tags": analysis["matched_tags"][:30],
-            "missing_tags": analysis["missing_tags"][:30],
-            "summary_snippet": normalized_text[:260],
-            "updated_at": now,
-            "discovered_at": now,
-            "apply_status": apply_status,
-            "apply_detail": apply_detail,
-            "applied_at": applied_at,
-            "track_item": track_item,
-            "ats_source": provider,
-        }
-
-        upsert_post_record(posts, record)
-        stored_count += 1
-        if accepted:
-            accepted_posts.append(record)
+    for row in accepted_posts:
+        row["ats_source"] = provider
 
     save_posts(posts_path, posts)
 
     accepted_posts.sort(key=lambda row: int(row.get("fit_score", 0)), reverse=True)
     return {
         "posts_path": posts_path,
-        "discovered": len(discovered_urls),
+        "discovered": discovered_count,
         "parsed": parsed_count,
         "filtered": filtered_count,
         "stored": stored_count,
@@ -177,7 +98,10 @@ def cmd_auto(args: list[str]) -> int:
         print("Automation status")
         print(f"Enabled: {'yes' if config.enabled else 'no'}")
         print(f"Config: {config_path.relative_to(root)}")
-        print(f"Search seeds: {len(config.search_urls)}")
+        print(f"Search terms: {len(config.search_terms)}")
+        print(f"Job sites: {', '.join(config.job_sites)}")
+        print(f"Search location: {config.search_location}")
+        print(f"Results wanted: {config.results_wanted}")
         print(f"Min fit score: {config.min_score}")
         print(f"Max parsed posts per run: {config.max_posts}")
         print(f"Auto apply: {'yes' if config.auto_apply else 'no'}")
@@ -187,8 +111,8 @@ def cmd_auto(args: list[str]) -> int:
         print(f"Last run: {config.last_run_at or 'never'}")
         if config.last_error:
             print(f"Last error: {config.last_error}")
-        if not config.search_urls:
-            print("Hint: set AUTO_SEARCH_URLS in .cv/auto.env (comma-separated URLs)")
+        if not config.search_terms:
+            print("Hint: set AUTO_SEARCH_TERMS in .cv/auto.env (comma-separated terms).")
         return 0
 
     if action == "disable":

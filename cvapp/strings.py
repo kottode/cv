@@ -3,7 +3,6 @@ cv - resume workflow CLI
 
 Usage:
     cv init <name>
-    cv install [target]
     cv current
     cv jobs [job] [name]
     cv title <new title>
@@ -15,7 +14,7 @@ Usage:
     cv fit <text|url>
     cv tailor [text|url]
     cv track [item] [status]
-    cv posts [list|all|filtered|show <index>]
+    cv posts [fetch|fit|list|all|filtered|show <index>]
     cv auto [status|enable|disable]
     cv ats [senior]
     cv ci telegram [setup|status|send] [message]
@@ -33,6 +32,8 @@ Examples:
     cv tailor \"Senior frontend role with React TypeScript\"
     cv tags
     cv tags https://example.com/jobs/frontend-engineer
+    cv posts fetch
+    cv posts fit
     cv posts
     cv auto status
     cv auto enable
@@ -43,6 +44,6 @@ Examples:
 
 USAGE_CI = "Usage: cv ci telegram [setup|status|send] [message]"
 USAGE_AUTO = "Usage: cv auto [status|enable|disable]"
-USAGE_POSTS = "Usage: cv posts [list|all|filtered|show <index>]"
+USAGE_POSTS = "Usage: cv posts [fetch|fit|list|all|filtered|show <index>]"
 USAGE_TRACK = "Usage: cv track <item> [status]"
 UNKNOWN_COMMAND_TEMPLATE = "Unknown command: {cmd}. Run: cv help"

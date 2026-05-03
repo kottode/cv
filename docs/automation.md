@@ -6,9 +6,9 @@
 
 When you run `cv auto enable`, the CLI uses internal functions (not shelling out to other `cv` commands) to:
 
-1. Seek candidate post URLs from configured seed URLs.
-2. Fetch and parse post text.
-3. Analyze and fit-score each post against the current resume.
+1. Fetch candidate jobs using JobSpy search terms.
+2. Parse post text (cached description first, URL fetch as fallback).
+3. Analyze and fit-score each cached post against the current resume.
 4. Grade posts (`A/B/C/D`) and filter using score and keyword rules.
 5. Store parsed records in the job-local post store.
 6. Auto-apply using Playwright when enabled.
@@ -22,6 +22,8 @@ cv auto status
 cv auto enable
 cv auto disable
 
+cv posts fetch
+cv posts fit
 cv posts
 cv posts all
 cv posts filtered
@@ -44,6 +46,10 @@ Example:
 
 ```env
 AUTO_ENABLED="0"
+AUTO_SEARCH_TERMS="frontend engineer,react developer"
+AUTO_JOB_SITES="linkedin,indeed"
+AUTO_SEARCH_LOCATION="remote"
+AUTO_RESULTS_WANTED="40"
 AUTO_SEARCH_URLS="https://boards.greenhouse.io/example,https://jobs.lever.co/example"
 AUTO_INCLUDE_KEYWORDS="frontend,react,typescript"
 AUTO_EXCLUDE_KEYWORDS="intern,principal"
@@ -63,7 +69,11 @@ AUTO_LAST_ERROR=""
 
 Field meanings:
 
-- `AUTO_SEARCH_URLS`: comma-separated seed URLs to crawl for job links.
+- `AUTO_SEARCH_TERMS`: comma-separated terms used by JobSpy.
+- `AUTO_JOB_SITES`: sites to query (`linkedin`, `indeed`, `zip_recruiter`, etc.).
+- `AUTO_SEARCH_LOCATION`: location text for job search (`remote`, city, country).
+- `AUTO_RESULTS_WANTED`: fetch budget per search term.
+- `AUTO_SEARCH_URLS`: legacy seed URL setting, still supported for compatibility.
 - `AUTO_INCLUDE_KEYWORDS`: optional. At least one must appear in post text.
 - `AUTO_EXCLUDE_KEYWORDS`: optional. Any match filters a post out.
 - `AUTO_MIN_SCORE`: minimum fit score for accepted posts.
@@ -72,10 +82,10 @@ Field meanings:
 - `AUTO_APPLY`: `1` enables Playwright auto-apply attempts.
 - `AUTO_NOTIFY`: `1` sends run summary to Telegram if configured.
 
-You can also override seed URLs for one run via environment variable:
+You can also override search terms for one run via environment variable:
 
 ```bash
-CV_AUTO_SEARCH_URLS="https://boards.greenhouse.io/example" cv auto enable
+CV_AUTO_SEARCH_TERMS="frontend engineer,react" cv auto enable
 ```
 
 ## Post Store and Viewer

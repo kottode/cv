@@ -104,6 +104,10 @@ class CVState:
 class AutoConfig:
     enabled: bool = False
     search_urls: list[str] = field(default_factory=list)
+    search_terms: list[str] = field(default_factory=list)
+    job_sites: list[str] = field(default_factory=lambda: ["linkedin", "indeed"])
+    search_location: str = "remote"
+    results_wanted: int = 40
     include_keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
     min_score: int = 60
