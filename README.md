@@ -2,7 +2,7 @@
 
 Resume CLI for init, profile switching, section management, tailoring, ATS checks, and application tracking.
 
-`cv` now uses a Python core (`cv_core.py`) for maintainability, while keeping the same `cv` command.
+`cv` now uses a modular Python architecture with a thin entrypoint (`cv_core.py`) and package modules under `cvapp/`.
 
 ## Install
 
@@ -33,7 +33,10 @@ cv title Frontend Developer
 Use this flow when adding or changing commands:
 
 - Define command behavior and input/output format first.
-- Implement command logic in `cv_core.py` and keep `cv` as a thin entry wrapper.
+- Add or update route wiring in `cvapp/commands.py`.
+- Put command-level behavior in `cvapp/features/<feature>/api.py`.
+- Put low-level adapters in `cvapp/internal/` (Telegram, scraping, browser automation, LLM).
+- Keep `cv_core.py` as a thin compatibility entry wrapper only.
 - Keep command names and existing behavior stable unless intentionally changed.
 - Run fast local checks:
 
@@ -69,6 +72,36 @@ Resume versions are stored at:
 jobs/<job>/<name>.md
 ```
 
+Source layout:
+
+```text
+cv
+cv_core.py
+cvapp/
+  app.py
+  commands.py
+  config.py
+  errors.py
+  strings.py
+  utils.py
+  features/
+    ats/
+    content/
+    profile/
+    resume/
+    fit/
+    track/
+    posts/
+    auto/
+  internal/
+    ats.py
+    project.py
+    telegram.py
+    web.py
+    browser.py
+    llm.py
+```
+
 ## Commands
 
 ```text
@@ -97,6 +130,8 @@ cv help
 See [docs/integrations.md](docs/integrations.md) for setup and script usage of Telegram integration.
 
 See [docs/automation.md](docs/automation.md) for automated seek/filter/analyze/grade/store/apply/track/notify flow.
+
+See [docs/architecture.md](docs/architecture.md) for architecture boundaries, routing design, and decision rationale.
 
 ## Skills Management
 

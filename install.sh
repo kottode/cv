@@ -16,6 +16,7 @@ TARGET="${1:-$HOME/.local/bin/cv}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_FILE="$SOURCE_DIR/cv"
 SOURCE_CORE_FILE="$SOURCE_DIR/cv_core.py"
+SOURCE_PACKAGE_DIR="$SOURCE_DIR/cvapp"
 
 if [ ! -f "$SOURCE_FILE" ]; then
     printf 'Error: cv script not found at %s\n' "$SOURCE_FILE" >&2
@@ -27,10 +28,18 @@ if [ ! -f "$SOURCE_CORE_FILE" ]; then
     exit 1
 fi
 
-mkdir -p "$(dirname "$TARGET")"
+if [ ! -d "$SOURCE_PACKAGE_DIR" ]; then
+    printf 'Error: cv package not found at %s\n' "$SOURCE_PACKAGE_DIR" >&2
+    exit 1
+fi
+
+TARGET_DIR="$(dirname "$TARGET")"
+mkdir -p "$TARGET_DIR"
 cp "$SOURCE_FILE" "$TARGET"
-cp "$SOURCE_CORE_FILE" "$(dirname "$TARGET")/cv_core.py"
+cp "$SOURCE_CORE_FILE" "$TARGET_DIR/cv_core.py"
+rm -rf "$TARGET_DIR/cvapp"
+cp -R "$SOURCE_PACKAGE_DIR" "$TARGET_DIR/cvapp"
 chmod +x "$TARGET"
 
 printf 'Installed: %s\n' "$TARGET"
-printf 'Ensure PATH contains: %s\n' "$(dirname "$TARGET")"
+printf 'Ensure PATH contains: %s\n' "$TARGET_DIR"
