@@ -12,10 +12,13 @@ Usage:
     cv tags [text|url]
     cv say <question>
     cv fit <text|url>
+    cv gen [current|all|<path>]
     cv tailor [text|url]
     cv track [item] [status]
     cv posts [fetch|fit|list|all|filtered|show <index>]
-    cv auto [status|enable|disable]
+    cv filters [name|list]
+    cv auto [status|enable|disable|schedule|unschedule]
+    cv accounts [name]
     cv ats [senior]
     cv ci telegram [setup|status|send] [message]
     cv help
@@ -35,15 +38,21 @@ Examples:
     cv posts fetch
     cv posts fit
     cv posts
+    cv filters
+    cv filters frontend
     cv auto status
     cv auto enable
+    cv accounts linkedin
     cv ats senior
     cv ci telegram
     cv ci telegram send \"Build finished\"
 """
 
 USAGE_CI = "Usage: cv ci telegram [setup|status|send] [message]"
-USAGE_AUTO = "Usage: cv auto [status|enable|disable]"
+USAGE_AUTO = "Usage: cv auto [status|enable|disable|schedule|unschedule]"
 USAGE_POSTS = "Usage: cv posts [fetch|fit|list|all|filtered|show <index>]"
+USAGE_FILTERS = "Usage: cv filters [name|list]"
+USAGE_GEN = "Usage: cv gen [current|all|<path>]"
+USAGE_ACCOUNTS = "Usage: cv accounts [name]"
 USAGE_TRACK = "Usage: cv track <item> [status]"
 UNKNOWN_COMMAND_TEMPLATE = "Unknown command: {cmd}. Run: cv help"

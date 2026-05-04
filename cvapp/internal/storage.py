@@ -15,6 +15,13 @@ from ..utils import now_iso, parse_iso
 
 TRACK_FIELDS = ["item", "status", "updated_at", "applied_at"]
 
+TRACK_STATUS_CODE_MAP = {
+    "applied": "a",
+    "rejected": "r",
+    "offer": "o",
+    "ghosted": "g",
+}
+
 
 def _read_track_rows_from_delimited(path: Path, delimiter: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -190,6 +197,9 @@ def maybe_mark_ghosted(path: Path) -> list[dict[str, str]]:
 
 
 def upsert_track_item(path: Path, item: str, status: str) -> dict[str, str]:
+    if not is_track_status(status):
+        die(f"Unknown track status: {status}")
+
     rows = maybe_mark_ghosted(path)
     now = now_iso()
 
@@ -212,6 +222,23 @@ def upsert_track_item(path: Path, item: str, status: str) -> dict[str, str]:
     rows.append(row)
     write_track_rows(path, rows)
     return row
+
+
+def is_track_status(status: str) -> bool:
+    token = status.lower().strip()
+    if token in TRACK_STATUS_CODE_MAP:
+        return True
+    return re.fullmatch(r"interview\d+", token) is not None
+
+
+def status_full_to_code(status: str) -> str:
+    token = status.lower().strip()
+    if token in TRACK_STATUS_CODE_MAP:
+        return TRACK_STATUS_CODE_MAP[token]
+    interview_match = re.fullmatch(r"interview(\d+)", token)
+    if interview_match:
+        return f"i{interview_match.group(1)}"
+    return "?"
 
 
 def status_token_to_full(token: str) -> str:

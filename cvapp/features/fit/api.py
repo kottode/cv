@@ -8,9 +8,10 @@ from typing import Any
 from ...errors import die, warn
 from ...internal import llm, web
 from ...internal.ats import ats_enrichment_text, run_external_ats_parser
-from ...internal.project import ensure_resume_exists, load_state, read_text, require_project
+from ...internal.project import ensure_resume_exists, extract_section_body, load_state, read_text, require_project
 from ...internal.resume_analysis import (
     analyze_job_fit as analyze_job_fit_internal,
+    extract_meaningful_tags,
     fit_grade as fit_grade_internal,
     keyword_filter_reason as keyword_filter_reason_internal,
     keywords_from_text,
@@ -51,7 +52,9 @@ def cmd_fit(args: list[str]) -> int:
     provider, parsed, hint = run_external_ats_parser(
         resume_text,
         auto_setup=False,
+        extract_section_body=extract_section_body,
         parse_experience_entries=parse_experience_entries,
+        extract_meaningful_tags=extract_meaningful_tags,
     )
     if hint:
         warn(hint)

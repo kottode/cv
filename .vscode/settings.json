@@ -1,0 +1,6 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "./install.sh": true,
+    "cv": true
+  }
+}

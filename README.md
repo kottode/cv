@@ -12,6 +12,8 @@ Resume CLI for init, profile switching, section management, tailoring, ATS check
 
 The installer creates an isolated runtime at `~/.local/bin/.cv-runtime`, installs dependencies from `requirements.txt` and `requirements-ats.txt`, and writes a launcher so `cv` runs without manual venv activation.
 
+For PDF generation (`cv gen`), the installer also ensures `lualatex` is installed.
+
 Re-running install is incremental: dependency install is skipped when `requirements.txt` has not changed. Use `--force` to reinstall dependencies.
 
 Optional dependencies:
@@ -121,14 +123,35 @@ cv exp [list|add|rm|manage] ...
 cv tags [text|url]
 cv say <question>
 cv fit <text|url>
+cv gen [current|all|<path>]
 cv tailor [text|url]
 cv track [item] [status]
 cv posts [fetch|fit|list|all|filtered|show <index>]
-cv auto [status|enable|disable]
+cv filters [name|list]
+cv auto [status|enable|disable|schedule|unschedule]
 cv ats [senior]
 cv ci telegram [setup|status|send] [message]
 cv help
 ```
+
+## Interactive Filters
+
+Use profile-based filters to control which fetched posts are accepted during `cv posts fit` and `cv auto enable`:
+
+```bash
+cv filters
+cv filters frontend
+cv filters list
+```
+
+Profiles are stored in `filters/<name>.json` and include:
+
+- seniority tokens
+- preferred locations
+- remote acceptance
+- phone and email identity fields
+- minimum salary
+- job types
 
 ## Integrations
 
@@ -272,7 +295,7 @@ jobs/<job>/track.csv
 `cv posts fetch` stores fetched post records in:
 
 ```text
-jobs/<job>/posts.json
+.cv/posts.db
 ```
 
 Score and filter cached posts with:
@@ -303,8 +326,8 @@ cv auto disable
 `cv auto enable` runs one automation cycle using `.cv/auto.env` settings:
 
 - fetch jobs with JobSpy (`AUTO_SEARCH_TERMS`, `AUTO_JOB_SITES`, `AUTO_SEARCH_LOCATION`)
-- parse and fit-score each post
-- grade and store to `jobs/<job>/posts.json`
+- parse and cache posts in `.cv/posts.db`
+- apply fit filters on cached posts (not during fetch)
 - optionally auto-apply with Playwright (`AUTO_APPLY=1`)
 - track successful applies in `jobs/<job>/track.csv`
 - optionally notify via Telegram (`AUTO_NOTIFY=1`)

@@ -6,31 +6,37 @@ from typing import Any
 from ...config import CVState
 from ...errors import die
 from ...internal.auto_config import load_auto_config
-from ...internal.posts_pipeline import fetch_posts_from_jobspy, fit_cached_posts
+from ...internal.filters import default_filter_name, filter_signature, load_filter_profile
+from ...internal.posts_db import ensure_posts_db as db_ensure_posts_db
+from ...internal.posts_db import load_posts_with_fit
+from ...internal.posts_pipeline import fetch_posts_from_jobspy, fit_cached_posts, resume_hash_for_state
 from ...internal.project import load_state, require_project
-from ...internal.storage import (
-    ensure_posts_file as storage_ensure_posts_file,
-    load_posts as storage_load_posts,
-    save_posts as storage_save_posts,
-    upsert_post_record as storage_upsert_post_record,
-)
 from ...strings import USAGE_POSTS
 
 
 def ensure_posts_file(root: Path, state: CVState) -> Path:
-    return storage_ensure_posts_file(root, state)
+    del state
+    return db_ensure_posts_db(root)
 
 
-def load_posts(path: Path) -> list[dict[str, Any]]:
-    return storage_load_posts(path)
+def load_posts(root: Path, state: CVState) -> list[dict[str, Any]]:
+    config = load_auto_config(root)
+    profile_name = config.filter_profile or default_filter_name(state)
+    profile = load_filter_profile(root, profile_name)
+    resume_hash = resume_hash_for_state(root, state)
+    cache_key = f"{resume_hash}:{filter_signature(profile)}"
+    return load_posts_with_fit(root, state, cache_key)
 
 
 def save_posts(path: Path, posts: list[dict[str, Any]]) -> None:
-    storage_save_posts(path, posts)
+    del path
+    del posts
 
 
 def upsert_post_record(posts: list[dict[str, Any]], record: dict[str, Any]) -> bool:
-    return storage_upsert_post_record(posts, record)
+    del posts
+    del record
+    return False
 
 
 def _sort_posts(posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -55,21 +61,31 @@ def _print_rows(root: Path, path: Path, rows: list[dict[str, Any]], posts_total:
     print("Use: cv posts show <index> for full details")
 
 
+def _print_search_urls(urls: list[str]) -> None:
+    cleaned = [str(url).strip() for url in urls if str(url).strip()]
+    if not cleaned:
+        print("Search URLs: (none configured)")
+        return
+    print(f"Search URLs ({len(cleaned)}):")
+    for url in cleaned:
+        print(f"- {url}")
+
+
 def cmd_posts(args: list[str]) -> int:
     root = require_project()
     state = load_state(root)
     path = ensure_posts_file(root, state)
-    posts = load_posts(path)
 
     action = args[0].lower() if args else "list"
 
     if action == "fetch":
         config = load_auto_config(root)
-        summary = fetch_posts_from_jobspy(root, state, config, posts)
-        save_posts(path, posts)
+        summary = fetch_posts_from_jobspy(root, state, config)
+        search_terms = [str(term).strip() for term in summary.get("search_terms", []) if str(term).strip()]
         print("Posts fetch complete.")
         print("Source: JobSpy")
-        print(f"Search terms: {', '.join(summary.get('search_terms', []))}")
+        print(f"Search terms: {', '.join(search_terms) if search_terms else '(none)'}")
+        _print_search_urls(summary.get("search_urls", []))
         print(f"Fetched rows: {summary.get('fetched_rows', 0)}")
         print(f"Added: {summary.get('added', 0)}")
         print(f"Updated: {summary.get('updated', 0)}")
@@ -78,15 +94,19 @@ def cmd_posts(args: list[str]) -> int:
         return 0
 
     if action == "fit":
+        posts = load_posts(root, state)
         if not posts:
             print("No cached posts yet.")
             print("Run: cv posts fetch")
             return 0
 
         config = load_auto_config(root)
-        summary = fit_cached_posts(root, state, config, posts, force=False)
-        save_posts(path, posts)
+        profile_name = config.filter_profile or default_filter_name(state)
+        profile = load_filter_profile(root, profile_name)
+        setattr(config, "_active_profile", profile)
+        summary = fit_cached_posts(root, state, config, force=False)
         print("Posts fit complete.")
+        print(f"Filter profile: {profile_name}")
         print(f"Scored now: {summary.get('scored', 0)}")
         print(f"From cache: {summary.get('cached', 0)}")
         print(f"Accepted: {len(summary.get('accepted', []))}")
@@ -95,9 +115,10 @@ def cmd_posts(args: list[str]) -> int:
         accepted_rows = summary.get("accepted", [])
         if accepted_rows:
             print()
-            _print_rows(root, path, accepted_rows, len(posts))
+            _print_rows(root, path, accepted_rows, int(summary.get("total", 0)))
         return 0
 
+    posts = load_posts(root, state)
     posts = _sort_posts(posts)
 
     if not posts:

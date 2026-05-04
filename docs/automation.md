@@ -1,6 +1,6 @@
 # Automated Job Application
 
-`cv auto [status|enable|disable]` runs a self-hosted automation cycle for the current job profile.
+`cv auto [status|enable|disable|schedule|unschedule]` runs and schedules a self-hosted automation cycle for the current job profile.
 
 ## What It Does
 
@@ -10,7 +10,7 @@ When you run `cv auto enable`, the CLI uses internal functions (not shelling out
 2. Parse post text (cached description first, URL fetch as fallback).
 3. Analyze and fit-score each cached post against the current resume.
 4. Grade posts (`A/B/C/D`) and filter using score and keyword rules.
-5. Store parsed records in the job-local post store.
+5. Store parsed records in the project-global post store.
 6. Auto-apply using Playwright when enabled.
 7. Track successful applies in the job-local tracking file.
 8. Send a run summary to Telegram when enabled and configured.
@@ -21,6 +21,8 @@ When you run `cv auto enable`, the CLI uses internal functions (not shelling out
 cv auto status
 cv auto enable
 cv auto disable
+cv auto schedule
+cv auto unschedule
 
 cv posts fetch
 cv posts fit
@@ -28,6 +30,8 @@ cv posts
 cv posts all
 cv posts filtered
 cv posts show 1
+cv filters
+cv filters frontend
 ```
 
 ## Files
@@ -35,7 +39,7 @@ cv posts show 1
 Automation state is project-local and job-local:
 
 - `.cv/auto.env`
-- `jobs/<job>/posts.json`
+- `.cv/posts.db`
 - `jobs/<job>/track.csv`
 
 ## Configure `.cv/auto.env`
@@ -47,9 +51,10 @@ Example:
 ```env
 AUTO_ENABLED="0"
 AUTO_SEARCH_TERMS="frontend engineer,react developer"
-AUTO_JOB_SITES="linkedin,indeed"
+AUTO_JOB_SITES="all"
 AUTO_SEARCH_LOCATION="remote"
-AUTO_RESULTS_WANTED="40"
+AUTO_RESULTS_WANTED="1500"
+AUTO_FILTER_PROFILE=""
 AUTO_SEARCH_URLS="https://boards.greenhouse.io/example,https://jobs.lever.co/example"
 AUTO_INCLUDE_KEYWORDS="frontend,react,typescript"
 AUTO_EXCLUDE_KEYWORDS="intern,principal"
@@ -69,10 +74,11 @@ AUTO_LAST_ERROR=""
 
 Field meanings:
 
-- `AUTO_SEARCH_TERMS`: comma-separated terms used by JobSpy.
-- `AUTO_JOB_SITES`: sites to query (`linkedin`, `indeed`, `zip_recruiter`, etc.).
+- `AUTO_SEARCH_TERMS`: comma-separated terms used by JobSpy. If empty, automation falls back to `CURRENT_TITLE`.
+- `AUTO_JOB_SITES`: sites to query. Use `all` to query every JobSpy-backed source.
 - `AUTO_SEARCH_LOCATION`: location text for job search (`remote`, city, country).
 - `AUTO_RESULTS_WANTED`: fetch budget per search term.
+- `AUTO_FILTER_PROFILE`: active profile name from `filters/<name>.json`.
 - `AUTO_SEARCH_URLS`: legacy seed URL setting, still supported for compatibility.
 - `AUTO_INCLUDE_KEYWORDS`: optional. At least one must appear in post text.
 - `AUTO_EXCLUDE_KEYWORDS`: optional. Any match filters a post out.
@@ -93,8 +99,8 @@ CV_AUTO_SEARCH_TERMS="frontend engineer,react" cv auto enable
 Each parsed post record includes:
 
 - URL, inferred company/title
-- status (`accepted` or `filtered`) and filter reason
-- fit score and grade
+- fit status (`accepted` or `filtered`) and filter reason (cached per resume hash)
+- fit score cache and overall grade
 - matched and missing tags
 - apply status and detail
 - optional tracking item for successful apply
@@ -104,6 +110,12 @@ Inspect details:
 
 ```bash
 cv posts show <index>
+```
+
+Filter profiles are managed interactively:
+
+```bash
+cv filters [name]
 ```
 
 ## Auto-Apply (Playwright)
@@ -131,15 +143,19 @@ Then keep `AUTO_NOTIFY="1"` in `.cv/auto.env`.
 
 If Telegram is not configured, automation still runs and skips notification.
 
-## Suggested Scheduling
+## Scheduler
 
 `cv auto enable` performs one cycle immediately and keeps automation marked enabled in config.
 
-For recurring runs, schedule the command externally (cron/systemd timer/GitHub Actions runner on your machine):
+Use built-in hourly scheduling:
 
 ```bash
-cd /path/to/project && cv auto enable
+cv auto schedule
+cv auto status
+cv auto unschedule
 ```
+
+The scheduler installs a user crontab entry that runs at minute `0` of every hour and appends logs to `~/.local/share/cv/auto-hourly.log`.
 
 ## Notes
 

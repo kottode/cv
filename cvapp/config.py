@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CV_VERSION = "0.2.0"
-DEFAULT_MODEL = "gpt-5-mini"
+DEFAULT_MODEL = "gpt-4.1"
 STATE_DIR = Path(".cv")
 STATE_FILE = STATE_DIR / "state.env"
 LEGACY_TRACK_FILE = STATE_DIR / "track.tsv"
@@ -105,9 +105,10 @@ class AutoConfig:
     enabled: bool = False
     search_urls: list[str] = field(default_factory=list)
     search_terms: list[str] = field(default_factory=list)
-    job_sites: list[str] = field(default_factory=lambda: ["linkedin", "indeed"])
+    job_sites: list[str] = field(default_factory=lambda: ["all"])
     search_location: str = "remote"
-    results_wanted: int = 40
+    results_wanted: int = 1500
+    filter_profile: str = ""
     include_keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
     min_score: int = 60

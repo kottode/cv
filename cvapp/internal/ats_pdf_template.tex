@@ -1,0 +1,193 @@
+\documentclass[11pt, a4paper]{article}
+
+% ATS-safe, single-column page geometry
+\usepackage[a4paper, top=1.5cm, bottom=1.5cm, left=1.5cm, right=1.5cm]{geometry}
+\usepackage{iftex}
+\ifPDFTeX
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[sfdefault]{noto}
+\else
+\usepackage[english]{babel}
+\usepackage{fontspec}
+\defaultfontfeatures{Ligatures=TeX}
+\setmainfont{Noto Sans}[
+  UprightFont=* Regular,
+  ItalicFont=* Regular,
+  BoldFont=* Bold,
+  BoldItalicFont=* Bold
+]
+\setsansfont{Noto Sans}[
+  UprightFont=* Regular,
+  ItalicFont=* Regular,
+  BoldFont=* Bold,
+  BoldItalicFont=* Bold
+]
+\fi
+\renewcommand{\familydefault}{\sfdefault}
+
+% Keep resume output upright and ATS-friendly even when markdown adds emphasis.
+\renewcommand{\emph}[1]{\textup{#1}}
+\renewcommand{\textit}[1]{\textup{#1}}
+\renewcommand{\textsl}[1]{\textup{#1}}
+\renewcommand{\itshape}{\upshape}
+
+\usepackage{hyperref}
+\usepackage{xcolor}
+\ifPDFTeX
+\input{glyphtounicode}
+\pdfgentounicode=1
+\fi
+
+\definecolor{primary}{RGB}{0, 51, 102}
+
+\setcounter{secnumdepth}{0}
+\setcounter{tocdepth}{0}
+\urlstyle{same}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primary,
+  filecolor=primary,
+  urlcolor=primary,
+  pdftitle={Resume},
+  pdfpagemode=UseNone
+}
+
+\newcommand{\sectionrule}{\vspace{-0.62em}\noindent{\color{primary}\rule{\textwidth}{0.5pt}}\vspace{0.13em}}
+
+\newif\ifheaderblock
+\headerblockfalse
+\newif\ifcompanyblock
+\companyblockfalse
+
+\newenvironment{companyindentblock}{%
+  \begin{list}{}{%
+    \setlength{\leftmargin}{0.6em}%
+    \setlength{\rightmargin}{0pt}%
+    \setlength{\itemsep}{0pt}%
+    \setlength{\parsep}{0pt}%
+    \setlength{\topsep}{0pt}%
+    \setlength{\partopsep}{0pt}%
+  }%
+  \item[]%
+}{%
+  \end{list}%
+}
+
+\makeatletter
+\renewcommand\section{\@startsection{section}{1}{\z@}%
+  {-1.8ex \@plus -0.2ex \@minus -.2ex}%
+  {0.22ex \@plus .1ex}%
+  {\normalfont\Huge\bfseries\centering\color{black}}}
+\renewcommand\subsection{\@startsection{subsection}{2}{\z@}%
+  {0.36ex \@plus .08ex}%
+  {0.11ex \@plus .05ex}%
+  {\normalfont\LARGE\bfseries\color{primary}}}
+\renewcommand\subsubsection{\@startsection{subsubsection}{3}{\z@}%
+  {0.26ex \@plus .08ex}%
+  {0.01ex \@plus .03ex}%
+  {\normalfont\large\bfseries\color{black}}}
+\makeatother
+
+% Pandoc headings: H1 = name header, H2 = major section heading.
+\let\oldsection\section
+\renewcommand{\section}[1]{%
+  \ifcompanyblock
+    \end{companyindentblock}%
+    \companyblockfalse%
+  \fi
+  \ifheaderblock
+    \end{center}%
+    \headerblockfalse%
+  \fi
+  \oldsection{\MakeUppercase{#1}}%
+  \vspace{0em}%
+  \begin{center}%
+  \headerblocktrue%
+}
+
+\let\oldsubsection\subsection
+\renewcommand{\subsection}[1]{%
+  \ifcompanyblock
+    \end{companyindentblock}%
+    \companyblockfalse%
+  \fi
+  \ifheaderblock
+    \end{center}%
+    \headerblockfalse%
+    \vspace{0.19em}%
+  \fi
+  \oldsubsection{#1}\sectionrule%
+}
+
+\let\oldsubsubsection\subsubsection
+\renewcommand{\subsubsection}[1]{%
+  \ifcompanyblock
+    \end{companyindentblock}%
+    \companyblockfalse%
+  \fi
+  \oldsubsubsection{#1}%
+  \begin{companyindentblock}%
+  \companyblocktrue%
+}
+
+\AtEndDocument{%
+  \ifcompanyblock
+    \end{companyindentblock}%
+    \companyblockfalse%
+  \fi
+  \ifheaderblock
+    \end{center}%
+    \headerblockfalse%
+  \fi
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.14em}
+\linespread{0.99}
+\renewcommand{\labelitemi}{\raisebox{0.12ex}{\small\ensuremath{\bullet}}}
+
+\let\olditemize\itemize
+\let\endolditemize\enditemize
+\renewenvironment{itemize}{%
+  \olditemize
+  \setlength{\leftmargin}{1.2em}%
+  \setlength{\labelsep}{0.4em}%
+  \setlength{\itemsep}{0.08em}%
+  \setlength{\topsep}{0.08em}%
+  \setlength{\parsep}{0pt}%
+  \setlength{\partopsep}{0pt}%
+}{\endolditemize}
+
+\let\oldenumerate\enumerate
+\let\endoldenumerate\endenumerate
+\renewenvironment{enumerate}{%
+  \oldenumerate
+  \setlength{\leftmargin}{1.2em}%
+  \setlength{\labelsep}{0.4em}%
+  \setlength{\itemsep}{0.08em}%
+  \setlength{\topsep}{0.08em}%
+  \setlength{\parsep}{0pt}%
+  \setlength{\partopsep}{0pt}%
+}{\endoldenumerate}
+
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+
+$if(title)$
+\title{$title$}
+\author{}
+\date{}
+$endif$
+
+\begin{document}
+\pagestyle{empty}
+
+$if(title)$
+\maketitle
+$endif$
+
+$body$
+
+\end{document}

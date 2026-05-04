@@ -7,7 +7,7 @@ from ..errors import CVError, die, warn
 from .web import normalize_url
 
 
-DEFAULT_JOB_SITES = ["linkedin", "indeed", "zip_recruiter"]
+DEFAULT_JOB_SITES = ["all"]
 
 
 def _load_jobspy_scraper():
@@ -32,6 +32,8 @@ def _normalize_sites(sites: list[str]) -> list[str]:
             continue
         seen.add(token)
         cleaned.append(token)
+    if "all" in cleaned:
+        return ["all"]
     return cleaned or list(DEFAULT_JOB_SITES)
 
 
@@ -51,6 +53,60 @@ def fetch_jobs(search_terms: list[str], sites: list[str], location: str, results
     last_error = ""
 
     for term in terms:
+        if normalized_sites == ["all"]:
+            try:
+                dataframe = scraper(
+                    site_name=["all"],
+                    search_term=term,
+                    location=location_value,
+                    results_wanted=results_wanted,
+                    hours_old=hours_old,
+                    country_indeed="USA",
+                    linkedin_fetch_description=True,
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                last_error = str(exc)
+                warn(f"posts: JobSpy failed for site=all term='{term}': {exc}")
+                continue
+
+            if dataframe is None:
+                continue
+
+            try:
+                records: list[dict[str, Any]] = dataframe.to_dict("records")
+            except Exception as exc:
+                last_error = str(exc)
+                warn(f"posts: JobSpy payload unreadable for site=all term='{term}': {exc}")
+                continue
+
+            for item in records:
+                raw_url = str(item.get("job_url") or item.get("url") or "").strip()
+                normalized_url = normalize_url(raw_url)
+                identity = normalized_url or str(item.get("id") or "").strip()
+                if not identity or identity in seen_urls:
+                    continue
+                seen_urls.add(identity)
+
+                description = str(item.get("description") or item.get("job_description") or "").strip()
+                title = str(item.get("title") or "").strip()
+                company = str(item.get("company") or "").strip()
+
+                rows.append(
+                    {
+                        "external_id": str(item.get("id") or "").strip(),
+                        "url": normalized_url,
+                        "company": company,
+                        "title": title,
+                        "location": str(item.get("location") or "").strip(),
+                        "description": description,
+                        "source_site": str(item.get("site") or "all").strip(),
+                        "search_term": term,
+                    }
+                )
+            continue
+
         for site in normalized_sites:
             try:
                 dataframe = scraper(

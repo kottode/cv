@@ -4,9 +4,12 @@ from typing import Callable
 
 from .config import CV_VERSION
 from .errors import die
+from .features.accounts.api import cmd_accounts
 from .features.ats.api import cmd_ats
 from .features.auto.api import cmd_auto
+from .features.filters.api import cmd_filters
 from .features.fit.api import cmd_fit
+from .features.gen.api import cmd_gen
 from .features.posts.api import cmd_posts
 from .features.resume.api import cmd_current, cmd_exp, cmd_init, cmd_jobs, cmd_section, cmd_skills, cmd_tags, cmd_title
 from .features.say.api import cmd_say
@@ -41,10 +44,13 @@ COMMANDS: dict[str, CommandHandler] = {
     "tags": cmd_tags,
     "say": cmd_say,
     "fit": cmd_fit,
+    "gen": cmd_gen,
+    "filters": cmd_filters,
     "tailor": cmd_tailor,
     "track": cmd_track,
     "posts": cmd_posts,
     "auto": cmd_auto,
+    "accounts": cmd_accounts,
     "ats": cmd_ats,
     "ci": cmd_ci,
 }
